@@ -1,0 +1,1412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Glasgow Commuter & Family Layout AI Property Ranker</title>
+    <!-- UPG-04, REF-06 & Phase 3: Precompiled static Tailwind CSS + modular deferred JS + offline Map & Alpine.js -->
+    <link rel="stylesheet" href="/vendor/tailwind.min.css">
+    <script defer src="/js/state.js"></script>
+    <script defer src="/js/api.js"></script>
+    <script defer src="/js/map.js"></script>
+    <script defer src="/js/app.js"></script>
+    <script defer src="/vendor/alpine.min.js"></script>
+</head>
+<body class="bg-slate-100 text-slate-800 min-h-screen" x-data="propertyAgentApp()" x-init="initApp()">
+
+    <!-- Header -->
+    <header class="bg-slate-900 text-white border-b border-slate-800 sticky top-0 z-30">
+        <div class="max-w-7xl mx-auto px-6 py-4 flex flex-wrap items-center justify-between gap-4">
+            <div>
+                <h1 class="text-xl font-bold tracking-tight flex items-center gap-2">
+                    <span>🏡</span> Glasgow Commuter & Family Layout AI Agent
+                </h1>
+                <p class="text-xs text-slate-400 mt-0.5">
+                    Multimodal Vision Indexing • Dual-Commuter Transit • Scottish Offers-Over, Home Report &amp; LBTT • School Catchments
+                </p>
+            </div>
+            <div class="flex flex-wrap items-center gap-2.5 text-xs">
+                <div class="px-3 py-1.5 rounded-lg border font-medium flex items-center gap-1.5"
+                     :class="llmStatus.visionModelAvailable ? 'bg-emerald-950/60 border-emerald-600/50 text-emerald-300' : (llmStatus.ollamaOnline ? 'bg-amber-950/60 border-amber-600/50 text-amber-300' : 'bg-slate-800 border-slate-700 text-slate-300')"
+                     :title="llmStatus.setupHint">
+                    <span x-text="llmStatus.visionModelAvailable ? '🟢' : (llmStatus.ollamaOnline ? '🟡' : '⚪')"></span>
+                    <span x-text="llmStatus.modeDescription || 'Checking Local LLM...'"></span>
+                </div>
+                <button @click="reanalyzeLlm(false)" :disabled="scrapeJob.running"
+                        class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold transition flex items-center gap-1.5"
+                        title="Runs in background across all DB listings.">
+                    <span>🧠</span>
+                    <span x-text="(scrapeJob.running && scrapeJob.jobType === 'REANALYZE_LLM') ? 'LLM Re-Scan Active...' : 'Re-Scan All (LLM)'"></span>
+                </button>
+                <button @click="reanalyzeLlm(true)" :disabled="scrapeJob.running"
+                        class="px-3 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold transition flex items-center gap-1.5"
+                        title="Re-runs Ollama Vision & JSON synthesis only on listings that previously fell back to heuristic parsing.">
+                    <span>⚡</span>
+                    <span>Re-Scan Heuristic/Failed Only</span>
+                </button>
+                <button @click="toggleLogs()"
+                        class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-medium transition flex items-center gap-1.5">
+                    <span>📋</span>
+                    <span x-text="showLogs ? 'Hide Server Logs' : 'View Live Logs'"></span>
+                </button>
+                <span class="px-3 py-1.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-medium"
+                      x-text="results.length + ' Shown (' + totalIndexedCount + ' in DB)'"></span>
+            </div>
+        </div>
+
+        <!-- Global Live Background Refetch & Local Indexing Status Strip -->
+        <div x-cloak x-show="scrapeJob.running || (scrapeJob.state && scrapeJob.state !== 'IDLE' && !scrapeBannerDismissed)"
+             x-transition
+             class="border-t px-6 py-2.5 text-xs"
+             :class="scrapeJob.running ? 'bg-indigo-950/95 border-indigo-700/60 text-indigo-100' : (scrapeJob.state === 'FAILED' ? 'bg-rose-950/90 border-rose-700/60 text-rose-200' : 'bg-emerald-950/90 border-emerald-700/60 text-emerald-200')">
+            <div class="max-w-7xl mx-auto space-y-1.5">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                    <div class="flex flex-wrap items-center gap-2">
+                        <template x-if="scrapeJob.running">
+                            <span class="inline-flex items-center gap-1.5 font-bold text-amber-300">
+                                <span class="inline-block w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
+                                <span x-text="scrapeJob.jobType === 'REANALYZE_LLM' ? 'Background Local LLM Re-Scan Active' : 'Background Fetch & Local Indexing Active'"></span>
+                            </span>
+                        </template>
+                        <template x-if="!scrapeJob.running && scrapeJob.state === 'COMPLETED'">
+                            <span class="font-bold text-emerald-300">✓ Background Job Finished</span>
+                        </template>
+                        <template x-if="!scrapeJob.running && scrapeJob.state === 'FAILED'">
+                            <span class="font-bold text-rose-300">⚠ Background Job Failed</span>
+                        </template>
+
+                        <span class="px-2 py-0.5 rounded bg-black/40 border border-white/10 font-mono text-[11px]"
+                              x-text="'Scope: ' + (scrapeJob.targetCenter || filters.centerLocation) + ' (' + (scrapeJob.targetRadiusMiles || filters.radiusMiles) + ' mi)'"></span>
+                        <span x-show="scrapeJob.corridorsTotal > 0"
+                              class="px-2 py-0.5 rounded bg-black/40 border border-white/10 font-mono text-[11px]"
+                              x-text="'Batch: ' + scrapeJob.corridorsCompleted + '/' + scrapeJob.corridorsTotal + (scrapeJob.currentCorridor ? ' (' + scrapeJob.currentCorridor + ')' : '')"></span>
+                        <span x-show="scrapeJob.currentPage > 0 || scrapeJob.totalPagesFetched > 0"
+                              class="px-2 py-0.5 rounded bg-indigo-900/60 border border-indigo-400/40 text-indigo-200 font-mono text-[11px]"
+                              x-text="(scrapeJob.currentPage > 0 ? 'Page: ' + scrapeJob.currentPage + (scrapeJob.currentCorridorMaxPages > 0 ? '/' + scrapeJob.currentCorridorMaxPages : '') + ' • ' : '') + (scrapeJob.totalPagesFetched || 0) + ' pages read'"></span>
+                        <span class="px-2 py-0.5 rounded bg-emerald-900/60 border border-emerald-500/40 text-emerald-200 font-semibold text-[11px]"
+                              x-text="'+' + (scrapeJob.newlyIndexedCount || 0) + (scrapeJob.jobType === 'REANALYZE_LLM' ? ' Re-Scanned' : ' Newly Indexed')"></span>
+                        <span x-show="scrapeJob.skippedExistingCount > 0"
+                              class="px-2 py-0.5 rounded bg-slate-800/80 border border-slate-600/50 text-slate-300 text-[11px]"
+                              x-text="scrapeJob.skippedExistingCount + ' Already in Local DB'"></span>
+                        <span x-show="scrapeJob.failedItemCount > 0"
+                              class="px-2 py-0.5 rounded bg-amber-900/70 border border-amber-500/50 text-amber-200 font-semibold text-[11px]"
+                              x-text="'⚠ ' + scrapeJob.failedItemCount + ' POA/Malformed Skipped'"></span>
+                        <span class="px-2 py-0.5 rounded bg-black/40 border border-white/10 font-mono text-[11px]"
+                              x-text="(scrapeJob.elapsedSeconds || 0) + 's elapsed'"></span>
+                    </div>
+
+                    <div class="flex items-center gap-2">
+                        <span x-show="scrapeJob.running" class="text-[11px] text-amber-200/90 font-medium">
+                            🔒 Survives refresh • Parallel fetches &amp; queueing disabled
+                        </span>
+                        <button x-show="scrapeJob.running"
+                                @click="cancelScrapeJob()"
+                                class="px-2.5 py-0.5 rounded bg-rose-800 hover:bg-rose-700 text-rose-100 font-semibold text-[11px] transition shadow-sm flex items-center gap-1"
+                                title="Safely stop the running background scrape or re-scan job">
+                            <span>⏹</span>
+                            <span>Stop Job</span>
+                        </button>
+                        <button x-show="!scrapeJob.running"
+                                @click="scrapeBannerDismissed = true"
+                                class="text-slate-300 hover:text-white font-bold px-1.5">✕</button>
+                    </div>
+                </div>
+
+                <div class="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                    <div class="font-mono truncate text-slate-200">
+                        <template x-if="scrapeJob.running">
+                            <span>
+                                <span x-show="scrapeJob.currentListingId" class="text-cyan-300 font-bold"
+                                      x-text="'[' + scrapeJob.currentListingId + '] ' + (scrapeJob.currentListingAddress ? scrapeJob.currentListingAddress + ' — ' : '')"></span>
+                                <span x-text="scrapeJob.currentStep || scrapeJob.statusMessage"></span>
+                            </span>
+                        </template>
+                        <template x-if="!scrapeJob.running">
+                            <span x-text="scrapeJob.statusMessage"></span>
+                        </template>
+                    </div>
+                    <span x-show="scrapeJob.running && scrapeJob.currentImageTotal > 0"
+                          class="font-mono text-cyan-300 shrink-0"
+                          x-text="'Image ' + scrapeJob.currentImageIndex + '/' + scrapeJob.currentImageTotal"></span>
+                </div>
+
+                <!-- Live Progress Bar -->
+                <div x-show="scrapeJob.running" class="w-full bg-slate-900/90 rounded-full h-1.5 overflow-hidden border border-white/10">
+                    <div class="bg-gradient-to-r from-indigo-400 via-cyan-400 to-emerald-400 h-1.5 transition-all duration-300"
+                         :style="'width: ' + scrapeProgressPercent() + '%'"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Collapsible Live Server Log Drawer -->
+        <div x-cloak x-show="showLogs" x-transition class="bg-slate-950 border-t border-slate-800 px-6 py-4">
+            <div class="max-w-7xl mx-auto space-y-2">
+                <div class="flex items-center justify-between text-xs text-slate-400">
+                    <div>
+                        <span class="font-bold text-slate-200">Live Server & Scraper Logs</span>
+                        <span class="ml-2 font-mono text-[11px] text-slate-400" x-text="logFilePath"></span>
+                    </div>
+                    <button @click="loadLogs()" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-semibold">
+                        🔄 Refresh Logs
+                    </button>
+                </div>
+                <pre class="bg-black/80 text-emerald-400 font-mono text-[11px] p-3.5 rounded-lg border border-slate-800 max-h-60 overflow-y-auto leading-relaxed"
+                     x-text="logLines.join('\n')"></pre>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+        <!-- LEFT SIDEBAR: Search Area, Scottish Cash/LBTT, Dual-Commuter & Portal Controls -->
+        <aside class="lg:col-span-4 space-y-5">
+            <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200 space-y-4">
+                <div class="flex items-center justify-between border-b pb-2">
+                    <h2 class="text-base font-bold text-slate-900">1. Search Scope &amp; Scottish Budget</h2>
+                    <span x-show="scrapeJob.running"
+                          class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 text-[10px] font-bold">
+                        🔒 Scope Locked
+                    </span>
+                </div>
+
+                <div class="space-y-1.5">
+                    <label class="block text-xs font-semibold uppercase text-slate-500">Partner A Target Station, Subway or Workplace</label>
+                    <input type="text" list="centerLocationsList"
+                           x-model="filters.centerLocation"
+                           :disabled="scrapeJob.running"
+                           @change="if (!scrapeJob.running) triggerRanker(50)"
+                           @keydown.enter="if (!scrapeJob.running) runRanker()"
+                           placeholder="e.g. Glasgow Central, Queen Street, Hillhead Subway, QEUH, Uddingston..."
+                           class="w-full px-3 py-2 bg-white disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed border border-slate-300 focus:border-indigo-500 focus:outline-none rounded-lg text-sm font-medium text-slate-800">
+                    <datalist id="centerLocationsList">
+                        <option value="Glasgow Central"></option>
+                        <option value="Glasgow Queen Street"></option>
+                        <option value="Buchanan Street Subway"></option>
+                        <option value="St Enoch Subway"></option>
+                        <option value="Hillhead Subway (West End / Uni)"></option>
+                        <option value="Govan Subway (QEUH Interchange)"></option>
+                        <option value="QEUH"></option>
+                        <option value="Partick Rail & Subway Hub"></option>
+                        <option value="Bridge Street Subway P&R"></option>
+                        <option value="Shields Road Subway P&R"></option>
+                        <option value="Kelvinbridge Subway P&R"></option>
+                        <option value="Ibrox Subway"></option>
+                        <option value="Cessnock Subway"></option>
+                        <option value="Cowcaddens Subway"></option>
+                        <template x-for="st in stations" :key="st.stationName">
+                            <option :value="st.stationName"></option>
+                        </template>
+                    </datalist>
+                    <div class="flex flex-wrap gap-1 pt-0.5">
+                        <template x-for="hub in ['Glasgow Central', 'Glasgow Queen Street', 'Hillhead Subway', 'QEUH', 'Uddingston', 'East Kilbride', 'Motherwell', 'Bearsden']" :key="hub">
+                            <button type="button"
+                                    :disabled="scrapeJob.running"
+                                    @click="if (!scrapeJob.running) { filters.centerLocation = hub; filters.bypassHardFilters = false; runRanker(); }"
+                                    class="px-2 py-0.5 rounded text-[10px] font-semibold border transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                    :class="filters.centerLocation.toLowerCase() === hub.toLowerCase() ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border-slate-200'"
+                                    x-text="hub"></button>
+                        </template>
+                    </div>
+                </div>
+
+                <div>
+                    <div class="flex justify-between text-sm">
+                        <span class="font-medium truncate pr-2" x-text="'Radius from ' + (filters.centerLocation || 'Glasgow Central')"></span>
+                        <span class="font-bold text-indigo-600 shrink-0" x-text="filters.radiusMiles + ' miles'"></span>
+                    </div>
+                    <input type="range" min="1" max="30" step="0.5"
+                           x-model.number="filters.radiusMiles"
+                           :disabled="scrapeJob.running"
+                           @input="if (!scrapeJob.running) triggerRanker(250)"
+                           @change="if (!scrapeJob.running) triggerRanker(50)"
+                           class="w-full mt-1.5 accent-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed">
+                    <div class="flex justify-between text-[11px] text-slate-400">
+                        <span>1 mi</span><span>10 mi</span><span>15 mi</span><span>20 mi</span><span>30 mi</span>
+                    </div>
+                    <p x-show="scrapeJob.running"
+                       class="mt-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 font-medium leading-snug">
+                        🔒 Center &amp; radius changes are locked while the background fetch for
+                        <span class="font-bold" x-text="(scrapeJob.targetCenter || filters.centerLocation) + ' (' + (scrapeJob.targetRadiusMiles || filters.radiusMiles) + ' mi)'"></span>
+                        is running.
+                    </p>
+                </div>
+
+                <div>
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="block text-xs font-semibold uppercase text-slate-500">Property Types</label>
+                        <span class="text-[10px] text-indigo-600 font-medium">Portal-level filter</span>
+                    </div>
+                    <p class="text-[10px] text-slate-400 mb-2">Uncheck Flats or Terraced to filter them out at the portal query level.</p>
+                    <div class="grid grid-cols-2 gap-2 text-sm">
+                        <template x-for="type in allPropertyTypes" :key="type">
+                            <label class="flex items-center space-x-2 bg-slate-50 px-3 py-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-indigo-50/40">
+                                <input type="checkbox" :value="type" x-model="filters.propertyTypes" @change="triggerRanker(100)"
+                                       class="rounded text-indigo-600 focus:ring-indigo-500">
+                                <span x-text="type" class="text-xs font-medium"></span>
+                            </label>
+                        </template>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3 pt-1">
+                    <div>
+                        <label class="block text-xs font-semibold uppercase text-slate-500">Max Asking (£)</label>
+                        <input type="number" step="5000" x-model.number="filters.maxPrice" @input="triggerRanker(300)" @change="triggerRanker(50)"
+                               class="w-full mt-1 px-3 py-2 border border-slate-200 rounded-lg text-sm font-semibold">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase text-slate-500">Min Bedrooms</label>
+                        <input type="number" min="1" max="6" x-model.number="filters.minBedrooms" @input="triggerRanker(300)" @change="triggerRanker(50)"
+                               class="w-full mt-1 px-3 py-2 border border-slate-200 rounded-lg text-sm font-semibold">
+                    </div>
+                </div>
+
+                <!-- FEAT-01: Scottish Offers Over, Home Report LTV & LBTT Upfront Cash Calculator -->
+                <div class="bg-slate-50 rounded-xl p-3 border border-slate-200 space-y-2.5">
+                    <div class="flex items-center justify-between">
+                        <button type="button" @click="showScottishFinance = !showScottishFinance"
+                                class="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                            <span>🏴󠁧󠁢󠁳󠁣󠁴󠁿 Scottish Offers-Over &amp; LBTT Cash</span>
+                        </button>
+                        <button type="button" @click="showScottishFinance = !showScottishFinance"
+                                class="text-[10px] font-semibold text-indigo-600 hover:underline"
+                                x-text="showScottishFinance ? 'Hide' : 'Configure'"></button>
+                    </div>
+                    <div x-show="showScottishFinance" class="space-y-2.5 pt-1 border-t border-slate-200/80 text-xs">
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="block text-[10px] font-semibold uppercase text-slate-500">Offers-Over Uplift</label>
+                                <select x-model="offersOverSelectValue" @change="onOffersOverModeChange()"
+                                        class="w-full mt-1 px-2 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold bg-white">
+                                    <option value="AUTO">Auto by Area (5–15%)</option>
+                                    <option value="0">+0% (At Asking / Fixed)</option>
+                                    <option value="5">+5% Over Asking</option>
+                                    <option value="8">+8% Over Asking</option>
+                                    <option value="10">+10% Over Asking</option>
+                                    <option value="12">+12% Over Asking</option>
+                                    <option value="15">+15% Over (Prime)</option>
+                                    <option value="20">+20% Over (Hot)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-semibold uppercase text-slate-500">Mortgage Deposit %</label>
+                                <select x-model.number="filters.depositPct" @change="triggerRanker(80)"
+                                        class="w-full mt-1 px-2 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold bg-white">
+                                    <option :value="5">5% (95% LTV)</option>
+                                    <option :value="10">10% (90% LTV)</option>
+                                    <option :value="15">15% (85% LTV)</option>
+                                    <option :value="20">20% (80% LTV)</option>
+                                    <option :value="25">25% (75% LTV)</option>
+                                    <option :value="35">35% (65% LTV)</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div>
+                            <label class="block text-[10px] font-semibold uppercase text-slate-500">Max Upfront Cash Available (£, 0 = No Cap)</label>
+                            <input type="number" step="5000" min="0" placeholder="0 = Any upfront cash"
+                                   x-model.number="filters.maxUpfrontCashGbp"
+                                   @input="triggerRanker(300)" @change="triggerRanker(80)"
+                                   class="w-full mt-1 px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold bg-white">
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-2 text-[11px]">
+                            <label class="flex items-center gap-1.5 bg-white px-2 py-1.5 rounded-lg border border-slate-200 cursor-pointer">
+                                <input type="checkbox" x-model="filters.firstTimeBuyer"
+                                       :disabled="filters.additionalDwelling"
+                                       @change="triggerRanker(80)" class="rounded text-indigo-600">
+                                <span class="font-medium">First-Time Buyer</span>
+                            </label>
+                            <label class="flex items-center gap-1.5 bg-white px-2 py-1.5 rounded-lg border border-slate-200 cursor-pointer">
+                                <input type="checkbox" x-model="filters.additionalDwelling"
+                                       @change="if (filters.additionalDwelling) filters.firstTimeBuyer = false; triggerRanker(80)"
+                                       class="rounded text-indigo-600">
+                                <span class="font-medium">2nd Home (+8% ADS)</span>
+                            </label>
+                        </div>
+                        <p class="text-[10px] text-slate-500 leading-snug">
+                            Models Scottish lender LTV cap on Home Report + cash over HR + Revenue Scotland LBTT.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="border-t pt-3 space-y-3">
+                    <div class="flex items-center justify-between">
+                        <h3 class="text-xs font-bold uppercase text-slate-500">Public Transport (Train / Subway / Bus)</h3>
+                        <button type="button" @click="toggleSecondCommuter()"
+                                class="px-2 py-0.5 rounded-md text-[10px] font-bold border transition"
+                                :class="showSecondCommuter ? 'bg-violet-600 text-white border-violet-600' : 'bg-violet-50 hover:bg-violet-100 text-violet-700 border-violet-200'"
+                                x-text="showSecondCommuter ? '👥 Partner B Active' : '+ 2nd Commuter'">
+                        </button>
+                    </div>
+
+                    <div>
+                        <label class="block text-[11px] font-semibold text-slate-500 mb-1.5">Modes Considered (picks best by time &amp; frequency)</label>
+                        <div class="grid grid-cols-3 gap-1.5 text-xs">
+                            <template x-for="mode in allTransportModes" :key="mode.id">
+                                <label class="flex items-center justify-center space-x-1.5 bg-slate-50 px-2 py-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-indigo-50/40">
+                                    <input type="checkbox" :value="mode.id" x-model="filters.transportModes" @change="triggerRanker(100)"
+                                           class="rounded text-indigo-600 focus:ring-indigo-500">
+                                    <span x-text="mode.label" class="font-semibold"></span>
+                                </label>
+                            </template>
+                        </div>
+                    </div>
+
+                    <div>
+                        <div class="flex justify-between text-sm">
+                            <span class="font-medium truncate pr-2" x-text="'Partner A Max to ' + (filters.centerLocation || 'Target')"></span>
+                            <span class="font-bold text-indigo-600 shrink-0" x-text="filters.maxDoorToCentralCommuteMins + ' mins'"></span>
+                        </div>
+                        <input type="range" min="15" max="60" step="1" x-model.number="filters.maxDoorToCentralCommuteMins" @input="triggerRanker(250)" @change="triggerRanker(50)"
+                               class="w-full mt-1 accent-indigo-600">
+                    </div>
+
+                    <!-- FEAT-04: Partner B / Dual-Commuter Household Panel -->
+                    <div x-show="showSecondCommuter" class="bg-violet-50/70 p-3 rounded-xl border border-violet-200 space-y-2.5">
+                        <div class="flex items-center justify-between">
+                            <label class="text-[11px] font-bold text-violet-900">👥 Partner B Workplace / Hub</label>
+                            <button type="button" @click="toggleSecondCommuter()" class="text-[10px] text-violet-700 hover:underline font-semibold">Clear</button>
+                        </div>
+                        <input type="text" list="centerLocationsList"
+                               x-model="filters.secondCenterLocation"
+                               @change="triggerRanker(80)"
+                               @keydown.enter="runRanker()"
+                               placeholder="e.g. QEUH, Hillhead Subway, Queen Street..."
+                               class="w-full px-2.5 py-1.5 bg-white border border-violet-300 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:border-violet-600">
+                        <div class="flex flex-wrap gap-1">
+                            <template x-for="hubB in ['QEUH', 'Hillhead Subway', 'Glasgow Queen Street', 'Glasgow Central', 'Partick Rail & Subway Hub']" :key="hubB">
+                                <button type="button"
+                                        @click="filters.secondCenterLocation = hubB; runRanker();"
+                                        class="px-2 py-0.5 rounded text-[10px] font-semibold border transition"
+                                        :class="(filters.secondCenterLocation || '').toLowerCase() === hubB.toLowerCase() ? 'bg-violet-600 text-white border-violet-600' : 'bg-white hover:bg-violet-100 text-violet-800 border-violet-200'"
+                                        x-text="hubB"></button>
+                            </template>
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-xs">
+                                <span class="font-medium text-violet-900 truncate pr-2" x-text="'Partner B Max to ' + (filters.secondCenterLocation || '2nd Hub')"></span>
+                                <span class="font-bold text-violet-700 shrink-0" x-text="filters.maxSecondCommuteMins + ' mins'"></span>
+                            </div>
+                            <input type="range" min="15" max="60" step="1"
+                                   x-model.number="filters.maxSecondCommuteMins"
+                                   @input="triggerRanker(250)" @change="triggerRanker(60)"
+                                   class="w-full mt-1 accent-violet-600">
+                        </div>
+                    </div>
+
+                    <div>
+                        <div class="flex justify-between text-sm">
+                            <span class="font-medium">Min Peak Frequency</span>
+                            <span class="font-bold text-indigo-600" x-text="filters.minServicesPerHour + '+ / hr (every ' + Math.round(60 / Math.max(1, filters.minServicesPerHour)) + 'm)'"></span>
+                        </div>
+                        <input type="range" min="1" max="12" step="1" x-model.number="filters.minServicesPerHour" @input="triggerRanker(250)" @change="triggerRanker(50)"
+                               class="w-full mt-1 accent-indigo-600">
+                    </div>
+
+                    <label class="flex items-center justify-between text-xs font-medium bg-slate-50 p-2.5 rounded-lg border border-slate-200 cursor-pointer">
+                        <span>Require Free Station Park &amp; Ride</span>
+                        <input type="checkbox" x-model="filters.requireFreeStationParking" @change="triggerRanker(100)" class="rounded text-indigo-600">
+                    </label>
+
+                    <label class="flex items-center justify-between text-xs font-medium bg-slate-50 p-2.5 rounded-lg border border-slate-200 cursor-pointer">
+                        <span>Require Category A Step-Free Station</span>
+                        <input type="checkbox" x-model="filters.requireStepFreeCategoryA" @change="triggerRanker(100)" class="rounded text-indigo-600">
+                    </label>
+                </div>
+
+                <div class="space-y-2 pt-1">
+                    <div>
+                        <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Scraping Portal Engine</label>
+                        <select x-model="filters.portalProvider" :disabled="scrapeJob.running"
+                                class="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-semibold bg-white disabled:opacity-50">
+                            <option value="rightmove">Rightmove (Headless Chrome)</option>
+                            <option value="onthemarket">OnTheMarket (Direct HTTP)</option>
+                            <option value="all">All Portals (Rightmove + OnTheMarket)</option>
+                        </select>
+                    </div>
+
+                    <button @click="syncRightmove()" :disabled="scrapeJob.running || clearingDb"
+                            title="Runs in background on server (survives browser refresh)."
+                            class="w-full bg-slate-900 hover:bg-slate-800 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold py-2.5 px-4 rounded-lg text-xs transition flex items-center justify-center gap-2">
+                        <span x-show="!scrapeJob.running">🔄 Fetch All Listings in Radius (Background)</span>
+                        <span x-show="scrapeJob.running"
+                              x-text="'⏳ Background Job Active (+' + (scrapeJob.newlyIndexedCount || 0) + ' • ' + (scrapeJob.elapsedSeconds || 0) + 's)'"></span>
+                    </button>
+
+                    <button @click="clearDatabase()" :disabled="clearingDb || scrapeJob.running || totalIndexedCount === 0"
+                            class="w-full bg-white hover:bg-rose-50 disabled:opacity-50 disabled:cursor-not-allowed text-rose-700 border border-rose-200 hover:border-rose-300 font-semibold py-2 px-4 rounded-lg text-xs transition flex items-center justify-center gap-1.5">
+                        <span x-show="!clearingDb">🗑️ Clear Properties DB (<span x-text="totalIndexedCount"></span>)</span>
+                        <span x-show="clearingDb">Clearing PostgreSQL Database...</span>
+                    </button>
+                </div>
+
+                <!-- Live Local Refetch & Indexing Status Card -->
+                <div x-show="scrapeJob.running || (scrapeJob.state && scrapeJob.state !== 'IDLE')"
+                     class="rounded-xl p-3 border text-[11px] space-y-1.5"
+                     :class="scrapeJob.running ? 'bg-indigo-50 border-indigo-200 text-indigo-900' : (scrapeJob.state === 'FAILED' ? 'bg-rose-50 border-rose-200 text-rose-800' : 'bg-emerald-50 border-emerald-200 text-emerald-800')">
+                    <div class="flex items-center justify-between font-bold">
+                        <span x-text="scrapeJob.running ? '🔄 Local Refetch & Indexing Status (Live)' : (scrapeJob.state === 'FAILED' ? '⚠ Last Local Refetch Failed' : '✓ Last Local Refetch Completed')"></span>
+                        <span class="font-mono text-[10px]" x-text="(scrapeJob.elapsedSeconds || 0) + 's'"></span>
+                    </div>
+                    <div class="text-[11px] font-medium"
+                         x-text="'Target: ' + (scrapeJob.targetCenter || filters.centerLocation) + ' (' + (scrapeJob.targetRadiusMiles || filters.radiusMiles) + ' mi)'"></div>
+                    <div class="flex flex-wrap gap-1.5 text-[10px] font-semibold">
+                        <span x-show="scrapeJob.totalPagesFetched > 0 || scrapeJob.currentPage > 0"
+                              class="px-2 py-0.5 rounded bg-white/80 border border-black/10 font-mono"
+                              x-text="(scrapeJob.currentPage > 0 && scrapeJob.running ? 'pg ' + scrapeJob.currentPage + (scrapeJob.currentCorridorMaxPages > 0 ? '/' + scrapeJob.currentCorridorMaxPages : '') + ' • ' : '') + (scrapeJob.totalPagesFetched || 0) + ' pgs read'"></span>
+                        <span class="px-2 py-0.5 rounded bg-white/80 border border-black/10"
+                              x-text="'+' + (scrapeJob.newlyIndexedCount || 0) + (scrapeJob.jobType === 'REANALYZE_LLM' ? ' re-scanned' : ' newly saved')"></span>
+                        <span x-show="scrapeJob.skippedExistingCount > 0"
+                              class="px-2 py-0.5 rounded bg-white/80 border border-black/10"
+                              x-text="scrapeJob.skippedExistingCount + ' skipped (in DB)'"></span>
+                        <span x-show="scrapeJob.priceChangesDetectedCount > 0"
+                              class="px-2 py-0.5 rounded bg-emerald-100/90 border border-emerald-300 text-emerald-900"
+                              x-text="'📉 ' + scrapeJob.priceChangesDetectedCount + ' price changes synced'"></span>
+                        <span x-show="scrapeJob.failedItemCount > 0"
+                              class="px-2 py-0.5 rounded bg-amber-100/90 border border-amber-300 text-amber-900"
+                              x-text="'⚠ ' + scrapeJob.failedItemCount + ' POA/err'"></span>
+                        <span class="px-2 py-0.5 rounded bg-white/80 border border-black/10"
+                              x-text="totalIndexedCount + ' total in DB'"></span>
+                    </div>
+                    <div x-show="scrapeJob.running" class="font-mono text-[10px] text-indigo-800 bg-white/70 rounded px-2 py-1 border border-indigo-200/70 break-words">
+                        <span x-show="scrapeJob.currentListingId" class="font-bold"
+                              x-text="'[' + scrapeJob.currentListingId + '] '"></span>
+                        <span x-text="scrapeJob.currentStep || scrapeJob.statusMessage"></span>
+                    </div>
+                    <div x-show="!scrapeJob.running" class="text-[11px] font-medium"
+                         x-text="scrapeJob.statusMessage || scrapeStatus"></div>
+                </div>
+                <p x-show="scrapeStatus && (!scrapeJob.state || scrapeJob.state === 'IDLE')"
+                   x-text="scrapeStatus"
+                   class="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1.5 font-medium text-center"></p>
+            </div>
+        </aside>
+
+        <!-- RIGHT PANEL: Dynamic Criteria Builder, Interactive Map, Workflow Tabs & Ranked Leaderboard -->
+        <section class="lg:col-span-8 space-y-5">
+
+            <!-- Dynamic Criteria & AI Suggestion Box -->
+            <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200 space-y-4">
+                <div class="flex flex-wrap items-center justify-between gap-2 border-b pb-2">
+                    <div>
+                        <h2 class="text-base font-bold text-slate-900">2. Dynamic Ranking Criteria &amp; AI Suggestions</h2>
+                        <p class="text-[11px] text-slate-500">Add, remove, or change priority weights — scores (60/100 pts) recalculate immediately.</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button @click="resetDefaultCriteria()"
+                                class="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 text-xs font-semibold px-3 py-1.5 rounded-lg transition">
+                            Reset Defaults
+                        </button>
+                        <button x-show="filters.dynamicCriteria.length > 0"
+                                @click="clearAllCriteria()"
+                                class="bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-700 border border-slate-200 text-xs font-semibold px-3 py-1.5 rounded-lg transition">
+                            Clear All
+                        </button>
+                        <button @click="runRanker()" :disabled="ranking"
+                                class="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-semibold px-4 py-1.5 rounded-lg transition">
+                            <span x-show="!ranking">⚡ Re-Rank Properties</span>
+                            <span x-show="ranking">Ranking...</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- IMP-04: Scrape Coverage Envelope Warning -->
+                <div x-show="scrapeScopeWarning()"
+                     class="text-[11px] font-medium text-amber-900 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 flex flex-wrap items-center justify-between gap-2">
+                    <span class="flex items-center gap-1.5">
+                        <span>📡</span>
+                        <span x-text="scrapeScopeWarning()"></span>
+                    </span>
+                    <button @click="syncRightmove()" :disabled="scrapeJob.running"
+                            class="px-2.5 py-1 rounded bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-bold text-[10px] shrink-0 transition">
+                        🔄 Sync Expanded Range
+                    </button>
+                </div>
+
+                <div x-show="rankStatus" class="text-[11px] font-medium text-indigo-700 bg-indigo-50/80 border border-indigo-200 rounded-lg px-3 py-1.5 flex flex-wrap items-center justify-between gap-2">
+                    <span x-text="rankStatus"></span>
+                    <div class="flex items-center gap-2">
+                        <span x-show="filters.bypassHardFilters"
+                              @click="filters.bypassHardFilters = false; runRanker();"
+                              class="cursor-pointer px-2 py-0.5 rounded bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 font-bold text-[10px]">
+                            🔓 Showing All DB (Click to Re-Apply Sidebar Cutoffs)
+                        </span>
+                        <span class="font-bold" x-text="filters.dynamicCriteria.length + ' active criteria'"></span>
+                    </div>
+                </div>
+
+                <!-- AI Semantic Vector Search Bar (pgvector + nomic-embed-text) -->
+                <div class="bg-gradient-to-r from-indigo-50/80 via-slate-50 to-indigo-50/80 rounded-xl p-3 border border-indigo-100 space-y-2.5">
+                    <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <span class="font-bold text-indigo-900 flex items-center gap-1.5">
+                            <span>🧠 AI Semantic Vector Search</span>
+                            <span class="px-2 py-0.5 rounded-full text-[10px] bg-indigo-100 text-indigo-800 font-mono border border-indigo-200"
+                                  x-text="(embeddingStats.embeddedProperties || 0) + '/' + (embeddingStats.totalProperties || totalIndexedCount) + ' props embedded (' + (embeddingStats.totalChunks || 0) + ' chunks)'"></span>
+                            <span class="px-1.5 py-0.2 rounded text-[9px] bg-emerald-100 text-emerald-800 font-semibold"
+                                  x-text="'pgvector • ' + (embeddingStats.embeddingModel || 'nomic-embed-text')"></span>
+                        </span>
+                        <button @click="triggerEmbedAll()" :disabled="embeddingInProgress"
+                                title="Generates 768-dim vector embeddings for all property vision notes, photos, and descriptions"
+                                class="text-[11px] font-semibold text-indigo-700 hover:text-indigo-900 bg-white px-2.5 py-1 rounded border border-indigo-200 shadow-sm transition disabled:opacity-50">
+                            <span x-show="!embeddingInProgress">⚡ Sync All Embeddings</span>
+                            <span x-show="embeddingInProgress"
+                                  x-text="embeddingStats.batchTotal > 0 ? ('Syncing vectors (' + (embeddingStats.batchProcessed || 0) + '/' + embeddingStats.batchTotal + ')...') : 'Syncing vectors...'"></span>
+                        </button>
+                    </div>
+
+                    <div class="flex gap-2">
+                        <input type="text" x-model="semanticQuery" @keydown.enter="runSemanticSearch()"
+                               placeholder="Ask in natural language (e.g. 'fitted wardrobes in bedroom', 'room for kids trampoline', 'island breakfast bar')..."
+                               class="flex-1 px-3 py-2 bg-white border border-indigo-200 rounded-lg text-xs focus:outline-none focus:border-indigo-500 shadow-inner">
+                        <button @click="runSemanticSearch()" :disabled="searchingSemantic"
+                                class="bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-2 rounded-lg text-xs font-semibold shrink-0 transition flex items-center gap-1.5 shadow-sm">
+                            <span x-show="!searchingSemantic">🔍 Search &amp; Rank</span>
+                            <span x-show="searchingSemantic">Searching...</span>
+                        </button>
+                        <button x-show="semanticResults !== null || semanticQueryActive" @click="clearSemanticSearch()"
+                                class="bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-2 rounded-lg text-xs font-semibold shrink-0">
+                            Clear
+                        </button>
+                    </div>
+
+                    <!-- Semantic Search Results List -->
+                    <div x-show="semanticResults !== null" class="space-y-2 pt-1 border-t border-indigo-100">
+                        <div class="flex flex-wrap items-center justify-between gap-2 text-[11px] text-indigo-900 font-semibold">
+                            <div class="flex items-center gap-2">
+                                <span x-text="'Found ' + (semanticResults ? semanticResults.length : 0) + ' properties matching \u201C' + semanticQueryActive + '\u201D'"></span>
+                                <span class="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-200">
+                                    ✓ Active as Priority Criterion in Table
+                                </span>
+                            </div>
+                            <span class="text-slate-500 text-[10px] font-normal">Ranked by hybrid pgvector semantic + full-text lexical match</span>
+                        </div>
+                        <template x-if="semanticResults && semanticResults.length === 0">
+                            <p class="text-xs text-slate-500 bg-white p-2.5 rounded border border-slate-200 text-center">
+                                No properties matched this query above 50% confidence. Try rephrasing or click "Sync All Embeddings" above.
+                            </p>
+                        </template>
+                        <div class="max-h-64 overflow-y-auto space-y-1.5 pr-1">
+                            <template x-for="res in (semanticResults || [])" :key="res.listingId + '-' + (res.imageRef || res.chunkType)">
+                                <div class="bg-white p-2.5 rounded-lg border border-indigo-200 hover:border-indigo-400 transition text-xs flex gap-3 items-start shadow-sm">
+                                    <img :src="res.thumbnailUrl" class="w-16 h-14 object-cover rounded shrink-0 bg-slate-100 border border-slate-200" onerror="this.src='/placeholder.jpg'">
+                                    <div class="flex-1 min-w-0">
+                                        <div class="flex items-center justify-between gap-1">
+                                            <a :href="res.rightmoveUrl" target="_blank" class="font-bold text-indigo-700 hover:underline truncate" x-text="res.address"></a>
+                                            <span class="px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 font-mono"
+                                                  :class="res.similarityScore >= 0.65 ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-indigo-100 text-indigo-800 border border-indigo-200'"
+                                                  x-text="Math.round(res.similarityScore * 100) + '% match'"></span>
+                                        </div>
+                                        <div class="text-[11px] text-slate-500 font-medium" x-text="'£' + res.priceGbp.toLocaleString() + ' • ' + res.bedrooms + ' beds • ' + (res.nearestStationName || 'Glasgow') + ' (~' + res.estimatedDoorToCentralMins + 'm to Central)'"></div>
+                                        <div class="text-[10px] text-slate-700 bg-slate-50 p-1.5 rounded mt-1 border border-slate-200/60 font-mono leading-relaxed">
+                                            <span class="font-bold text-indigo-900" x-text="'[' + res.chunkType + (res.imageRef ? ' • ' + res.imageRef : '') + ']: '"></span>
+                                            <span x-text="res.chunkText"></span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Add Custom Rule Input -->
+                <div class="flex flex-col sm:flex-row gap-2">
+                    <input type="text" x-model="newRuleText" @keydown.enter="addCriterion()"
+                           placeholder="Add criterion (e.g. Top-tier secondary school catchment, Bearsden Academy, No electric heating...)"
+                           class="flex-1 px-3.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-500">
+                    <select x-model="newRulePriority" class="px-3 py-2 border border-slate-200 rounded-lg text-xs font-semibold bg-slate-50">
+                        <option value="MUST_HAVE">Must-Have</option>
+                        <option value="HIGH">High Priority</option>
+                        <option value="MEDIUM">Medium</option>
+                        <option value="NICE_TO_HAVE">Nice-to-Have</option>
+                    </select>
+                    <button @click="addCriterion()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-xs font-semibold">
+                        + Add Rule
+                    </button>
+                </div>
+
+                <!-- Clickable AI Suggestion Chips -->
+                <div>
+                    <p class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">
+                        💡 Suggested Criteria (Schools, SIMD, Transit &amp; Layout — Click to Add):
+                    </p>
+                    <div class="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+                        <template x-for="sug in availableSuggestions()" :key="sug">
+                            <button @click="addSuggestion(sug)"
+                                    class="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full border border-indigo-200 transition font-medium"
+                                    x-text="'+ ' + sug"></button>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- Active Criteria List -->
+                <div class="space-y-1.5 pt-1">
+                    <template x-for="(item, idx) in filters.dynamicCriteria" :key="item.rule + '-' + idx">
+                        <div class="flex items-center justify-between bg-slate-50 px-3 py-2 rounded-lg border border-slate-200 text-xs">
+                            <span class="font-medium text-slate-800" x-text="(idx + 1) + '. ' + item.rule"></span>
+                            <div class="flex items-center gap-2">
+                                <select x-model="item.priority" @change="runRanker()"
+                                        class="px-2 py-0.5 rounded font-bold text-[10px] border cursor-pointer"
+                                        :class="{
+                                            'bg-rose-100 text-rose-700 border-rose-200': item.priority === 'MUST_HAVE',
+                                            'bg-amber-100 text-amber-800 border-amber-200': item.priority === 'HIGH',
+                                            'bg-blue-100 text-blue-700 border-blue-200': item.priority === 'MEDIUM',
+                                            'bg-slate-200 text-slate-700 border-slate-300': item.priority === 'NICE_TO_HAVE'
+                                        }">
+                                    <option value="MUST_HAVE">MUST_HAVE</option>
+                                    <option value="HIGH">HIGH</option>
+                                    <option value="MEDIUM">MEDIUM</option>
+                                    <option value="NICE_TO_HAVE">NICE_TO_HAVE</option>
+                                </select>
+                                <button @click="removeCriterion(idx)" title="Remove criterion"
+                                        class="text-slate-400 hover:text-rose-600 font-bold text-base px-1.5 leading-none">×</button>
+                            </div>
+                        </div>
+                    </template>
+                    <p x-show="filters.dynamicCriteria.length === 0" class="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg font-medium text-center py-2 px-3">
+                        All dynamic criteria cleared — ranking by Public Transport, Sidebar Fit &amp; Price Value.
+                    </p>
+                </div>
+            </div>
+
+            <!-- FEAT-02 & FEAT-05: Buyer Workflow Filter Bar + View Switcher + Side-by-Side Compare Trigger -->
+            <div class="bg-white px-4 py-3 rounded-xl shadow-sm border border-slate-200 flex flex-wrap items-center justify-between gap-3">
+                <div class="flex flex-wrap items-center gap-1.5 text-xs">
+                    <button @click="setWorkflowTab('ALL')"
+                            class="px-3 py-1.5 rounded-lg font-semibold border transition"
+                            :class="filters.workflowFilter === 'ALL' ? 'bg-slate-900 text-white border-slate-900' : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'"
+                            x-text="'🏡 All Matching' + (filters.workflowFilter === 'ALL' ? ' (' + results.length + ')' : '')">
+                    </button>
+                    <button @click="setWorkflowTab('SHORTLISTED')"
+                            class="px-3 py-1.5 rounded-lg font-semibold border transition flex items-center gap-1"
+                            :class="filters.workflowFilter === 'SHORTLISTED' ? 'bg-amber-500 text-white border-amber-500' : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200'">
+                        <span>⭐ Shortlist</span>
+                        <span class="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-black/10"
+                              x-text="workflowSummary.shortlistedCount || 0"></span>
+                    </button>
+                    <button @click="setWorkflowTab('HIDDEN')"
+                            class="px-3 py-1.5 rounded-lg font-semibold border transition flex items-center gap-1"
+                            :class="filters.workflowFilter === 'HIDDEN' ? 'bg-slate-700 text-white border-slate-700' : 'bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-200'">
+                        <span>👁️ Dismissed</span>
+                        <span class="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-black/10"
+                              x-text="workflowSummary.hiddenCount || 0"></span>
+                    </button>
+
+                    <button x-show="compareIds.length > 0"
+                            @click="showCompareModal = true"
+                            class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold transition shadow-sm flex items-center gap-1.5">
+                        <span>⚖️ Compare Side-by-Side</span>
+                        <span class="px-1.5 py-0.2 rounded-full bg-white/20 text-[10px]" x-text="compareIds.length + '/4'"></span>
+                    </button>
+                </div>
+
+                <!-- View Mode Switcher (List / Split / Map) -->
+                <div class="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs">
+                    <button @click="setViewMode('LIST')"
+                            class="px-2.5 py-1 rounded-md font-semibold transition"
+                            :class="viewMode === 'LIST' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'">
+                        📋 List
+                    </button>
+                    <button @click="setViewMode('SPLIT')"
+                            class="px-2.5 py-1 rounded-md font-semibold transition"
+                            :class="viewMode === 'SPLIT' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:text-slate-900'">
+                        🗺️ Split Map
+                    </button>
+                    <button @click="setViewMode('MAP')"
+                            class="px-2.5 py-1 rounded-md font-semibold transition"
+                            :class="viewMode === 'MAP' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:text-slate-900'">
+                        🗺️ Full Map
+                    </button>
+                </div>
+            </div>
+
+            <!-- FEAT-02: Interactive Greater Glasgow Rail, SPT Subway & Property Score Map -->
+            <div x-cloak x-show="viewMode === 'SPLIT' || viewMode === 'MAP'"
+                 class="bg-slate-900 text-white rounded-xl shadow-md border border-slate-800 overflow-hidden">
+                <div class="px-4 py-2.5 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div class="flex flex-wrap items-center gap-2">
+                        <span class="font-bold text-slate-100">🗺️ Greater Glasgow Transit &amp; Score Map</span>
+                        <span class="inline-flex items-center gap-1 text-[10px] text-emerald-300"><span class="inline-block w-2 h-2 rounded-full bg-emerald-500"></span>85+</span>
+                        <span class="inline-flex items-center gap-1 text-[10px] text-indigo-300"><span class="inline-block w-2 h-2 rounded-full bg-indigo-500"></span>70–84</span>
+                        <span class="inline-flex items-center gap-1 text-[10px] text-amber-300"><span class="inline-block w-2 h-2 rounded-full bg-amber-500"></span>&lt;70</span>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-1.5 text-[11px]">
+                        <button @click="toggleMapLayer('rail')"
+                                class="px-2 py-0.5 rounded border font-semibold transition"
+                                :class="mapLayers.rail ? 'bg-sky-900/80 border-sky-500 text-sky-200' : 'bg-slate-800 border-slate-700 text-slate-400'">
+                            🚆 ScotRail (143)
+                        </button>
+                        <button @click="toggleMapLayer('subway')"
+                                class="px-2 py-0.5 rounded border font-semibold transition"
+                                :class="mapLayers.subway ? 'bg-amber-900/80 border-amber-500 text-amber-200' : 'bg-slate-800 border-slate-700 text-slate-400'">
+                            🚇 Subway (15)
+                        </button>
+                        <button @click="toggleMapLayer('schools')"
+                                class="px-2 py-0.5 rounded border font-semibold transition"
+                                :class="mapLayers.schools ? 'bg-emerald-900/80 border-emerald-500 text-emerald-200' : 'bg-slate-800 border-slate-700 text-slate-400'">
+                            🎓 Catchments
+                        </button>
+                        <button @click="toggleMapLayer('radius')"
+                                class="px-2 py-0.5 rounded border font-semibold transition"
+                                :class="mapLayers.radius ? 'bg-indigo-900/80 border-indigo-500 text-indigo-200' : 'bg-slate-800 border-slate-700 text-slate-400'">
+                            ⭕ Radius
+                        </button>
+                        <button @click="mapZoom(1.3)" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 font-bold">+</button>
+                        <button @click="mapZoom(0.77)" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 font-bold">−</button>
+                        <button @click="mapResetFit()" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 font-semibold">Fit</button>
+                    </div>
+                </div>
+
+                <div class="relative w-full" :class="viewMode === 'MAP' ? 'h-[32rem]' : 'h-80'">
+                    <canvas x-ref="transitMapCanvas" class="w-full h-full block select-none"></canvas>
+                </div>
+
+                <!-- Selected Map Pin Quick Preview Drawer -->
+                <template x-if="mapPreviewProperty">
+                    <div class="p-3.5 bg-slate-950 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
+                        <div class="flex items-center gap-3 min-w-0">
+                            <img :src="mapPreviewProperty.thumbnailUrl" class="w-16 h-12 object-cover rounded-lg border border-slate-700 shrink-0">
+                            <div class="min-w-0">
+                                <div class="flex items-center gap-2">
+                                    <span class="px-2 py-0.5 rounded bg-emerald-600 text-white font-bold text-[11px]"
+                                          x-text="mapPreviewProperty.overallScore + '/100'"></span>
+                                    <span class="font-bold text-white truncate" x-text="mapPreviewProperty.address"></span>
+                                </div>
+                                <div class="text-[11px] text-slate-400 mt-0.5"
+                                     x-text="'£' + mapPreviewProperty.priceGbp.toLocaleString() + ' (' + mapPreviewProperty.priceQualifier + ') • Cash ~£' + (mapPreviewProperty.costBreakdown ? mapPreviewProperty.costBreakdown.totalUpfrontCashGbp.toLocaleString() : '—') + ' • ' + mapPreviewProperty.doorToTargetMins + 'm via ' + mapPreviewProperty.bestTransitMode"></div>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button @click="toggleShortlist(mapPreviewProperty)"
+                                    class="px-2.5 py-1 rounded-lg border font-semibold transition"
+                                    :class="mapPreviewProperty.workflow?.shortlisted ? 'bg-amber-500 text-white border-amber-400' : 'bg-slate-800 text-slate-200 border-slate-700'">
+                                <span x-text="mapPreviewProperty.workflow?.shortlisted ? '⭐ Shortlisted' : '☆ Shortlist'"></span>
+                            </button>
+                            <button @click="openPropertyModal(mapPreviewProperty)"
+                                    class="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold">
+                                📐 Inspect Details &amp; Home Report
+                            </button>
+                            <button @click="mapPreviewProperty = null" class="text-slate-400 hover:text-white px-1.5 font-bold">✕</button>
+                        </div>
+                    </div>
+                </template>
+            </div>
+
+            <!-- Ranked Results Leaderboard -->
+            <div x-show="viewMode !== 'MAP'" class="space-y-4">
+                <div x-show="results.length === 0" class="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-center space-y-3">
+                    <div class="text-3xl" x-text="totalIndexedCount === 0 ? '🗄️' : (filters.workflowFilter === 'SHORTLISTED' ? '⭐' : '🔍')"></div>
+                    <h3 class="text-base font-bold text-slate-900"
+                        x-text="totalIndexedCount === 0
+                            ? 'PostgreSQL Database is Empty (0 Indexed Properties)'
+                            : (filters.workflowFilter === 'SHORTLISTED'
+                                ? 'No Shortlisted Properties Yet'
+                                : (filters.workflowFilter === 'HIDDEN'
+                                    ? 'No Dismissed Properties'
+                                    : ('0 of ' + totalIndexedCount + ' DB Properties Match Current Cutoffs')))"></h3>
+                    <p class="text-xs text-slate-500 max-w-md mx-auto"
+                       x-text="totalIndexedCount === 0
+                           ? 'Choose your Target Station / Location in the left sidebar and click Fetch All Listings in Radius to scrape fresh properties.'
+                           : (filters.workflowFilter !== 'ALL'
+                               ? 'Click All Matching above to browse ranked homes and star your favourites.'
+                               : 'Left-sidebar cutoffs (Property Types, Radius, Max Price, Partner B Commute, or Max Upfront Cash) excluded the current DB listings.')"></p>
+                    <button x-show="totalIndexedCount === 0"
+                            @click="syncRightmove()" :disabled="scraping"
+                            class="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white font-semibold py-2 px-4 rounded-lg text-xs transition">
+                        <span x-show="!scraping">🔄 Scrape &amp; Index Properties Around <span x-text="filters.centerLocation || 'Glasgow Central'"></span></span>
+                        <span x-show="scraping">Scraping &amp; Indexing...</span>
+                    </button>
+                    <div x-show="totalIndexedCount > 0 && filters.workflowFilter === 'ALL'" class="flex flex-wrap items-center justify-center gap-2 pt-1">
+                        <button @click="showAllDbProperties()"
+                                class="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg text-xs transition">
+                            <span>🔓</span>
+                            <span x-text="'Bypass Cutoffs & Show All ' + totalIndexedCount + ' DB Properties'"></span>
+                        </button>
+                        <button @click="relaxSidebarFilters()"
+                                class="inline-flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 font-semibold py-2 px-4 rounded-lg text-xs transition">
+                            <span>📏</span>
+                            <span>Widen Radius &amp; Transit Cutoffs (25 mi, 60 mins)</span>
+                        </button>
+                    </div>
+                </div>
+
+                <template x-for="(prop, index) in results" :key="prop.listingId">
+                    <div class="bg-white rounded-xl shadow-sm border overflow-hidden hover:border-indigo-300 transition"
+                         :class="prop.workflow?.shortlisted ? 'border-amber-400 ring-1 ring-amber-300' : 'border-slate-200'">
+                        <div class="p-5 space-y-4">
+                            <div class="flex flex-wrap items-start justify-between gap-4">
+                                <div class="flex items-start gap-3.5">
+                                    <img :src="prop.thumbnailUrl" alt="Property"
+                                         @click="openPropertyModal(prop)"
+                                         class="w-28 h-24 object-cover rounded-lg border border-slate-200 hidden sm:block shrink-0 cursor-pointer hover:opacity-90">
+                                    <div>
+                                        <div class="flex flex-wrap items-center gap-2">
+                                            <span class="px-2.5 py-0.5 rounded-md bg-slate-900 text-white text-xs font-bold" x-text="'#' + (index + 1)"></span>
+                                            <a :href="prop.rightmoveUrl" target="_blank" rel="noopener"
+                                               class="text-base font-bold text-slate-900 hover:text-indigo-600 underline-offset-2 hover:underline"
+                                               x-text="prop.title"></a>
+                                            <span x-show="prop.workflow?.viewingStatus && prop.workflow.viewingStatus !== 'NONE'"
+                                                  class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 text-[10px] font-bold"
+                                                  x-text="viewingStatusBadgeText(prop.workflow?.viewingStatus)"></span>
+                                        </div>
+                                        <p class="text-xs text-slate-500 mt-0.5"
+                                           x-text="prop.address + ' • ' + prop.propertyType + ' • ' + prop.bedrooms + ' Beds' + (prop.costBreakdown?.floorAreaSqm ? (' • ' + prop.costBreakdown.floorAreaSqm + ' m²') : '')"></p>
+
+                                        <!-- Action Bar (Floorplans/HR Modal, Commute AI, Shortlist, Compare, Map Pin, Hide) -->
+                                        <div class="flex flex-wrap items-center gap-1.5 mt-2">
+                                            <button @click="openPropertyModal(prop)"
+                                                    class="px-2.5 py-1 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-semibold transition"
+                                                    x-text="'📐 Photos, Floorplans & Home Report (' + ((prop.allImageUrls ? prop.allImageUrls.length : 1) + (prop.allFloorplanUrls ? prop.allFloorplanUrls.length : 1)) + ')'">
+                                            </button>
+                                            <button @click="runCommuteResearch(prop)"
+                                                    :disabled="isCommuteLoading(prop.listingId)"
+                                                    class="px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-[11px] font-semibold transition flex items-center gap-1 shadow-sm">
+                                                <span x-show="isCommuteLoading(prop.listingId)" class="animate-spin inline-block">⏳</span>
+                                                <span x-show="!isCommuteLoading(prop.listingId)">🤖</span>
+                                                <span x-text="getCommuteButtonLabel(prop.listingId)"></span>
+                                            </button>
+                                            <button @click="toggleShortlist(prop)"
+                                                    class="px-2.5 py-1 rounded-md border text-[11px] font-semibold transition"
+                                                    :class="prop.workflow?.shortlisted ? 'bg-amber-100 text-amber-900 border-amber-400' : 'bg-slate-100 hover:bg-amber-50 text-slate-700 border-slate-300'"
+                                                    x-text="prop.workflow?.shortlisted ? '⭐ Shortlisted' : '☆ Shortlist'">
+                                            </button>
+                                            <button @click="toggleCompare(prop)"
+                                                    class="px-2.5 py-1 rounded-md border text-[11px] font-semibold transition"
+                                                    :class="isCompared(prop.listingId) ? 'bg-indigo-100 text-indigo-800 border-indigo-400' : 'bg-slate-100 hover:bg-indigo-50 text-slate-700 border-slate-300'"
+                                                    x-text="isCompared(prop.listingId) ? '⚖️ Comparing' : '⚖️ Compare'">
+                                            </button>
+                                            <button @click="focusPropertyOnMap(prop)"
+                                                    class="px-2 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 text-[11px] font-medium transition"
+                                                    title="Show property pin & commute vector on Greater Glasgow transit map">
+                                                🗺️ Pin
+                                            </button>
+                                            <button @click="toggleHideProperty(prop)"
+                                                    class="px-2 py-1 rounded-md bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-700 border border-slate-300 text-[11px] font-medium transition"
+                                                    x-text="prop.workflow?.hidden ? '↩️ Restore' : '👁️ Hide'">
+                                            </button>
+                                            <a :href="prop.rightmoveUrl" target="_blank" rel="noopener"
+                                               class="px-2 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 text-[11px] font-semibold transition">
+                                                🔗 Portal ↗
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Price + Scottish Closing & Upfront Cash Reality + 0-100 Score -->
+                                <div class="flex items-center gap-4">
+                                    <div class="text-right tabular-nums">
+                                        <div class="text-lg font-extrabold text-slate-900" x-text="'£' + prop.priceGbp.toLocaleString()"></div>
+                                        <div x-show="prop.priceDropGbp > 0"
+                                             class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-300 text-[10px] font-bold mt-0.5"
+                                             x-text="'📉 -£' + (prop.priceDropGbp || 0).toLocaleString()"></div>
+                                        <div class="text-[11px] text-slate-500 font-medium"
+                                             x-text="prop.priceQualifier + (prop.costBreakdown?.pricePerSqmGbp ? (' • £' + prop.costBreakdown.pricePerSqmGbp.toLocaleString() + '/m²') : '')"></div>
+
+                                        <template x-if="prop.costBreakdown">
+                                            <div class="mt-1 text-[10px] bg-slate-50 px-2 py-1 rounded border border-slate-200 text-slate-700">
+                                                <div class="font-semibold"
+                                                     x-text="'Est. Close ~£' + prop.costBreakdown.estimatedClosingPriceGbp.toLocaleString() + ' (+' + prop.costBreakdown.premiumPctApplied + '%)'"></div>
+                                                <div class="font-bold text-indigo-700"
+                                                     :title="'Deposit £' + prop.costBreakdown.mortgageDepositGbp.toLocaleString() + ' + Over-HR £' + prop.costBreakdown.cashOverHomeReportGbp.toLocaleString() + ' + LBTT £' + prop.costBreakdown.lbttGbp.toLocaleString() + (prop.costBreakdown.adsGbp > 0 ? (' + ADS £' + prop.costBreakdown.adsGbp.toLocaleString()) : '')"
+                                                     x-text="'Upfront Cash: £' + prop.costBreakdown.totalUpfrontCashGbp.toLocaleString()"></div>
+                                            </div>
+                                        </template>
+
+                                        <div class="text-[10px] text-slate-500 mt-1 font-medium"
+                                             x-text="'Commute ' + prop.commuteScore + '/25 • Criteria ' + prop.layoutScore + '/60 • Value ' + prop.valueScore + '/15'"></div>
+                                    </div>
+                                    <div class="flex flex-col items-center justify-center w-16 h-16 rounded-xl text-white font-extrabold shadow-sm shrink-0"
+                                         :class="{
+                                             'bg-emerald-600': prop.overallScore >= 85,
+                                             'bg-indigo-600': prop.overallScore >= 70 && prop.overallScore < 85,
+                                             'bg-amber-500': prop.overallScore < 70
+                                         }">
+                                        <span class="text-xl leading-none" x-text="prop.overallScore"></span>
+                                        <span class="text-[10px] font-medium opacity-80">/ 100</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Multi-Modal Public Transport, Partner B, School Catchment, Home Report & Layout Quick Badges -->
+                            <div class="flex flex-wrap gap-2 text-xs">
+                                <span class="px-2.5 py-1 rounded-md bg-indigo-50 text-indigo-900 border border-indigo-200 font-bold"
+                                      x-text="prop.transitRouteSummary + ' • ' + prop.doorToTargetMins + 'm door-to-' + prop.targetDestination"></span>
+
+                                <template x-if="prop.secondCommute">
+                                    <span class="px-2.5 py-1 rounded-md bg-violet-100 text-violet-900 border border-violet-300 font-bold"
+                                          x-text="'👥 Partner B: ' + prop.secondCommute.transitRouteSummary + ' • ' + prop.secondCommute.doorToTargetMins + 'm to ' + prop.secondCommute.targetDestination"></span>
+                                </template>
+
+                                <span class="px-2.5 py-1 rounded-md bg-violet-50 text-violet-800 border border-violet-200 font-semibold"
+                                      x-text="'⏱️ Freq: ' + prop.frequencyLabel + ' • 📍 ' + prop.distanceFromTargetMiles + ' mi from ' + prop.targetDestination"></span>
+
+                                <template x-if="prop.schoolAndArea">
+                                    <span class="px-2.5 py-1 rounded-md font-semibold border"
+                                          :class="prop.schoolAndArea.attainmentTier === 'TOP_TIER' ? 'bg-emerald-50 text-emerald-900 border-emerald-300' : 'bg-cyan-50 text-cyan-800 border-cyan-200'"
+                                          :title="'Denominational: ' + prop.schoolAndArea.denomSecondary + ' • Council Tax: ' + prop.schoolAndArea.councilTaxGuide"
+                                          x-text="'🎓 ' + prop.schoolAndArea.nonDenomSecondary + ' • SIMD ' + prop.schoolAndArea.simdDecile + '/10'"></span>
+                                </template>
+
+                                <template x-if="prop.costBreakdown && prop.costBreakdown.homeReportVerified">
+                                    <span class="px-2.5 py-1 rounded-md font-bold border"
+                                          :class="(prop.workflow?.hrCategory3Count || 0) > 0 ? 'bg-rose-50 text-rose-800 border-rose-300' : 'bg-emerald-50 text-emerald-800 border-emerald-300'"
+                                          x-text="'📑 HR £' + prop.costBreakdown.estimatedHomeReportGbp.toLocaleString() + ((prop.workflow?.hrCategory3Count || 0) > 0 ? (' • ⚠ ' + prop.workflow.hrCategory3Count + ' Cat 3') : ' • Verified')"></span>
+                                </template>
+
+                                <span class="px-2.5 py-1 rounded-md font-semibold border"
+                                      :class="prop.stationProfile?.freeParkAndRide ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-amber-50 text-amber-800 border-amber-200'"
+                                      x-text="(prop.stationProfile?.freeParkAndRide ? '🅿️ Free P&R (' + prop.nearestStationName + ')' : '🅿️ Paid Parking (' + prop.nearestStationName + ')') + ' • Cat ' + (prop.stationProfile?.accessibilityCategory || 'B')"></span>
+
+                                <span class="px-2.5 py-1 rounded-md font-semibold border"
+                                      :class="prop.metadata.directGardenAccessFromLiving ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-slate-100 text-slate-600 border-slate-200'"
+                                      x-text="'👀 Sightline: ' + prop.metadata.gardenSightlineFromSofa"></span>
+                            </div>
+
+                            <!-- Personal Viewing Notes Banner if present -->
+                            <div x-show="prop.workflow?.viewingNotes"
+                                 class="bg-amber-50/80 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-900 flex items-start gap-2">
+                                <span class="font-bold shrink-0">📝 Viewing Notes:</span>
+                                <span x-text="prop.workflow?.viewingNotes"></span>
+                            </div>
+
+                            <!-- While researching commute -->
+                            <div x-show="isCommuteLoading(prop.listingId)"
+                                 class="bg-emerald-950/60 border border-emerald-500/40 p-3.5 rounded-xl text-emerald-200 text-xs flex items-center gap-3 animate-pulse shadow-sm">
+                                <span class="text-xl">⚙️</span>
+                                <div>
+                                    <div class="font-bold text-emerald-300 flex items-center gap-2">
+                                        <span>Gemma AI Commute Synthesis in Progress</span>
+                                        <span class="text-[10px] px-2 py-0.5 rounded bg-emerald-900 border border-emerald-600 font-mono" x-text="llmStatus.configuredRankingModel || 'gemma4:e4b'">gemma4:e4b</span>
+                                    </div>
+                                    <p class="text-[11px] text-emerald-300/80 mt-0.5">
+                                        Querying ScotRail station schedules, SPT Subway loops, and NaPTAN bus data (~10–15s).
+                                    </p>
+                                </div>
+                            </div>
+
+                            <!-- On-Demand Grounded Local LLM Commute Breakdown Panel -->
+                            <div x-show="isCommuteVisible(prop.listingId)"
+                                 class="bg-slate-950 text-slate-100 p-4 rounded-xl border border-emerald-500/40 space-y-2.5">
+                                <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2">
+                                    <div class="flex items-center gap-2">
+                                        <span class="text-xs font-bold text-emerald-400">🤖 Local LLM Commute Breakdown</span>
+                                        <span class="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700/60 font-mono text-[10px]"
+                                              x-text="getCommuteReport(prop.listingId)?.modelUsed + ' → ' + getCommuteReport(prop.listingId)?.targetLocation"></span>
+                                    </div>
+                                    <div class="flex flex-wrap items-center gap-2 text-[11px]">
+                                        <template x-if="getCommuteReport(prop.listingId)?.llmThinking">
+                                            <button @click="toggleThinking(prop.listingId)"
+                                                    class="px-2 py-0.5 rounded bg-violet-950 hover:bg-violet-900 text-violet-300 border border-violet-700/60 font-medium">
+                                                <span x-text="commuteReports[prop.listingId]?.showThinking ? 'Hide Gemma Thinking' : '🧠 View Gemma Thinking'"></span>
+                                            </button>
+                                        </template>
+                                        <button @click="toggleDossier(prop.listingId)"
+                                                class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium">
+                                            <span x-text="commuteReports[prop.listingId]?.showDossier ? 'Hide Grounded Evidence' : '📋 View ScotRail / Subway / NaPTAN Evidence'"></span>
+                                        </button>
+                                        <button @click="closeCommuteReport(prop.listingId)"
+                                                class="text-slate-400 hover:text-white font-bold px-1.5">✕</button>
+                                    </div>
+                                </div>
+                                <pre x-show="commuteReports[prop.listingId]?.showThinking && getCommuteReport(prop.listingId)?.llmThinking"
+                                     class="bg-violet-950/40 text-violet-200 font-mono text-[10px] p-3 rounded-lg border border-violet-800/60 overflow-x-auto whitespace-pre-wrap leading-relaxed"
+                                     x-text="'🧠 Gemma Internal Reasoning:\n\n' + getCommuteReport(prop.listingId)?.llmThinking"></pre>
+                                <div class="text-xs text-slate-200 leading-relaxed whitespace-pre-line"
+                                     x-text="getCommuteReport(prop.listingId)?.llmCommuteBreakdown"></div>
+                                <pre x-show="commuteReports[prop.listingId]?.showDossier"
+                                     class="bg-black/70 text-cyan-300 font-mono text-[10px] p-3 rounded-lg border border-slate-800 overflow-x-auto whitespace-pre-wrap leading-relaxed"
+                                     x-text="getCommuteReport(prop.listingId)?.groundedDossier"></pre>
+                            </div>
+
+                            <!-- AI Verdict Box -->
+                            <div class="bg-slate-50 p-3.5 rounded-lg border border-slate-200 text-xs text-slate-700 leading-relaxed">
+                                <span class="font-bold text-slate-900">🤖 AI Family Verdict: </span>
+                                <span x-text="prop.aiFamilyVerdict"></span>
+                            </div>
+
+                            <!-- Matched vs Compromised Criteria -->
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                                <div class="space-y-1">
+                                    <p class="font-bold text-emerald-700 uppercase text-[10px]">✅ Matched Criteria</p>
+                                    <template x-for="(m, mIdx) in prop.matchedCriteria" :key="mIdx + '-' + m">
+                                        <div class="text-slate-600 flex items-start gap-1.5">
+                                            <span class="text-emerald-600 font-bold">•</span>
+                                            <span x-text="m"></span>
+                                        </div>
+                                    </template>
+                                </div>
+                                <div class="space-y-1" x-show="prop.compromisedCriteria.length > 0">
+                                    <p class="font-bold text-rose-600 uppercase text-[10px]">⚠️ Compromises / Notes</p>
+                                    <template x-for="(c, cIdx) in prop.compromisedCriteria" :key="cIdx + '-' + c">
+                                        <div class="text-slate-600 flex items-start gap-1.5">
+                                            <span class="text-rose-500 font-bold">•</span>
+                                            <span x-text="c"></span>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </template>
+            </div>
+        </section>
+    </main>
+
+    <!-- In-App Floorplan, Scottish Home Report Inspector & Viewing Notes Modal -->
+    <div x-cloak x-show="selectedProperty !== null" x-transition
+         class="fixed inset-0 z-50 bg-slate-900/75 flex items-center justify-center p-4"
+         @keydown.escape.window="selectedProperty = null">
+        <div class="bg-white rounded-2xl max-w-5xl w-full max-h-[90vh] overflow-y-auto shadow-2xl border border-slate-200 p-6 space-y-5"
+             @click.outside="selectedProperty = null">
+            <template x-if="selectedProperty">
+                <div class="space-y-5">
+                    <div class="flex items-start justify-between gap-4 border-b pb-3">
+                        <div>
+                            <div class="flex flex-wrap items-center gap-2">
+                                <h2 class="text-lg font-bold text-slate-900" x-text="selectedProperty.title"></h2>
+                                <button @click="toggleShortlist(selectedProperty)"
+                                        class="px-2.5 py-0.5 rounded-md border text-xs font-bold transition"
+                                        :class="selectedProperty.workflow?.shortlisted ? 'bg-amber-100 text-amber-900 border-amber-400' : 'bg-slate-100 text-slate-700 border-slate-300'"
+                                        x-text="selectedProperty.workflow?.shortlisted ? '⭐ Shortlisted' : '☆ Shortlist'"></button>
+                            </div>
+                            <div class="flex flex-wrap items-center gap-2 mt-0.5">
+                                <p class="text-xs text-slate-500" x-text="selectedProperty.address + ' • £' + selectedProperty.priceGbp.toLocaleString() + ' (' + selectedProperty.priceQualifier + ')'"></p>
+                                <span x-show="selectedProperty.priceDropGbp > 0"
+                                      class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-300 text-[10px] font-bold"
+                                      x-text="'📉 Reduced by £' + (selectedProperty.priceDropGbp || 0).toLocaleString()"></span>
+                            </div>
+                        </div>
+                        <button @click="selectedProperty = null" class="text-slate-400 hover:text-slate-700 text-xl font-bold px-2">✕</button>
+                    </div>
+
+                    <!-- FEAT-01 & FEAT-03: Scottish Purchase Cash Summary & School Catchment Strip -->
+                    <template x-if="selectedProperty.costBreakdown">
+                        <div class="grid grid-cols-2 sm:grid-cols-5 gap-2.5 bg-slate-50 p-3.5 rounded-xl border border-slate-200 text-xs tabular-nums">
+                            <div>
+                                <div class="text-[10px] uppercase font-bold text-slate-400">Home Report Basis</div>
+                                <div class="font-bold text-slate-900 text-sm"
+                                     x-text="'£' + selectedProperty.costBreakdown.estimatedHomeReportGbp.toLocaleString()"></div>
+                                <div class="text-[10px]"
+                                     :class="selectedProperty.costBreakdown.homeReportVerified ? 'text-emerald-700 font-semibold' : 'text-slate-400'"
+                                     x-text="selectedProperty.costBreakdown.homeReportVerified ? '✓ Verified HR' : 'Conservative (= Asking)'"></div>
+                            </div>
+                            <div>
+                                <div class="text-[10px] uppercase font-bold text-slate-400">Est. Closing Price</div>
+                                <div class="font-bold text-slate-900 text-sm"
+                                     x-text="'£' + selectedProperty.costBreakdown.estimatedClosingPriceGbp.toLocaleString()"></div>
+                                <div class="text-[10px] text-slate-500"
+                                     x-text="'+' + selectedProperty.costBreakdown.premiumPctApplied + '% over asking'"></div>
+                            </div>
+                            <div>
+                                <div class="text-[10px] uppercase font-bold text-slate-400">Deposit + Over-HR</div>
+                                <div class="font-bold text-slate-900 text-sm"
+                                     x-text="'£' + (selectedProperty.costBreakdown.mortgageDepositGbp + selectedProperty.costBreakdown.cashOverHomeReportGbp).toLocaleString()"></div>
+                                <div class="text-[10px] text-slate-500"
+                                     x-text="'Dep £' + selectedProperty.costBreakdown.mortgageDepositGbp.toLocaleString() + ' + Gap £' + selectedProperty.costBreakdown.cashOverHomeReportGbp.toLocaleString()"></div>
+                            </div>
+                            <div>
+                                <div class="text-[10px] uppercase font-bold text-slate-400">Scottish LBTT / ADS</div>
+                                <div class="font-bold text-slate-900 text-sm"
+                                     x-text="'£' + (selectedProperty.costBreakdown.lbttGbp + selectedProperty.costBreakdown.adsGbp).toLocaleString()"></div>
+                                <div class="text-[10px] text-slate-500"
+                                     x-text="'LBTT £' + selectedProperty.costBreakdown.lbttGbp.toLocaleString() + (selectedProperty.costBreakdown.adsGbp > 0 ? (' + ADS £' + selectedProperty.costBreakdown.adsGbp.toLocaleString()) : '')"></div>
+                            </div>
+                            <div class="bg-indigo-600 text-white rounded-lg p-2">
+                                <div class="text-[10px] uppercase font-bold opacity-80">Total Upfront Cash</div>
+                                <div class="font-extrabold text-sm"
+                                     x-text="'£' + selectedProperty.costBreakdown.totalUpfrontCashGbp.toLocaleString()"></div>
+                                <div class="text-[10px] opacity-90"
+                                     x-text="selectedProperty.costBreakdown.pricePerSqmGbp ? ('£' + selectedProperty.costBreakdown.pricePerSqmGbp.toLocaleString() + '/m² (' + selectedProperty.costBreakdown.floorAreaSqm + ' m²)') : 'Upload HR for £/m²'"></div>
+                            </div>
+                        </div>
+                    </template>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        <div class="space-y-2">
+                            <p class="text-xs font-bold uppercase text-slate-500"
+                               x-text="'Downloaded Property Photos (' + (selectedProperty.allImageUrls ? selectedProperty.allImageUrls.length : 1) + ')'"></p>
+                            <img :src="activeModalPhoto || selectedProperty.thumbnailUrl" alt="Active Photo"
+                                 class="w-full h-72 object-cover rounded-xl border border-slate-200 bg-slate-100">
+                            <div class="grid grid-cols-6 gap-1.5 max-h-36 overflow-y-auto pt-1"
+                                 x-show="selectedProperty.allImageUrls && selectedProperty.allImageUrls.length > 1">
+                                <template x-for="(imgUrl, i) in selectedProperty.allImageUrls" :key="imgUrl + '-' + i">
+                                    <img :src="imgUrl" :alt="'Photo ' + (i + 1)"
+                                         @click="activeModalPhoto = imgUrl"
+                                         class="w-full h-14 object-cover rounded-lg cursor-pointer border-2 transition"
+                                         :class="activeModalPhoto === imgUrl ? 'border-indigo-600 ring-1 ring-indigo-400' : 'border-transparent opacity-80 hover:opacity-100'">
+                                </template>
+                            </div>
+                        </div>
+                        <div class="space-y-2">
+                            <p class="text-xs font-bold uppercase text-slate-500"
+                               x-text="'Architectural Floorplans (' + (selectedProperty.allFloorplanUrls ? selectedProperty.allFloorplanUrls.length : 1) + ')'"></p>
+                            <div class="space-y-2 max-h-[26rem] overflow-y-auto">
+                                <template x-for="(fpUrl, fIdx) in (selectedProperty.allFloorplanUrls && selectedProperty.allFloorplanUrls.length ? selectedProperty.allFloorplanUrls : [selectedProperty.floorplanUrl])" :key="fpUrl + '-' + fIdx">
+                                    <a :href="fpUrl" target="_blank" rel="noopener" title="Click to open full-resolution floorplan in new tab">
+                                        <img :src="fpUrl" alt="Floorplan"
+                                             class="w-full h-72 object-contain bg-slate-50 rounded-xl border border-slate-200 p-2 hover:border-indigo-400 transition">
+                                    </a>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- FEAT-05 & FEAT-06: Viewing Tracker + Scottish Home Report Inspector -->
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        <!-- Viewing Status & Personal Notes -->
+                        <div class="bg-amber-50/60 p-4 rounded-xl border border-amber-200 space-y-2.5">
+                            <div class="flex items-center justify-between">
+                                <h3 class="text-xs font-bold uppercase text-amber-900">📅 Viewing Tracker &amp; Personal Notes</h3>
+                                <span x-show="workflowSavedMsg" class="text-[11px] font-semibold text-emerald-700" x-text="workflowSavedMsg"></span>
+                            </div>
+                            <div class="flex gap-2">
+                                <select x-model="modalViewingStatus"
+                                        class="px-3 py-1.5 rounded-lg border border-amber-300 bg-white text-xs font-semibold text-slate-800">
+                                    <template x-for="opt in viewingStatusOptions" :key="opt.id">
+                                        <option :value="opt.id" x-text="opt.label"></option>
+                                    </template>
+                                </select>
+                                <button @click="saveModalWorkflow()" :disabled="savingWorkflow"
+                                        class="px-3.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-xs font-bold transition">
+                                    💾 Save Status &amp; Notes
+                                </button>
+                            </div>
+                            <textarea rows="3" x-model="modalViewingNotes"
+                                      placeholder="Record viewing impressions, solicitor closing date, sunlight, street noise, factor fees..."
+                                      class="w-full p-2.5 rounded-lg border border-amber-200 bg-white text-xs text-slate-800 focus:outline-none focus:border-amber-500"></textarea>
+                        </div>
+
+                        <!-- Scottish Home Report Inspector (PDF Upload or Single Survey Paste) -->
+                        <div class="bg-emerald-50/60 p-4 rounded-xl border border-emerald-200 space-y-2.5">
+                            <div class="flex items-center justify-between">
+                                <h3 class="text-xs font-bold uppercase text-emerald-900">📑 Scottish Home Report Inspector</h3>
+                                <label class="cursor-pointer px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition">
+                                    <span x-text="hrAnalyzing ? '⏳ Parsing...' : '📄 Upload Home Report PDF'"></span>
+                                    <input type="file" accept=".pdf,.txt" class="hidden" @change="onHomeReportFileSelected($event)" :disabled="hrAnalyzing">
+                                </label>
+                            </div>
+
+                            <div class="flex gap-2">
+                                <input type="text" x-model="hrRawText"
+                                       @keydown.enter="analyzePastedHomeReport()"
+                                       placeholder="Or paste Single Survey text (Valuation £..., m², Repair Category 2/3)..."
+                                       class="flex-1 px-2.5 py-1.5 rounded-lg border border-emerald-300 bg-white text-xs">
+                                <button @click="analyzePastedHomeReport()" :disabled="hrAnalyzing || !hrRawText.trim()"
+                                        class="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white text-xs font-semibold">
+                                    Analyze
+                                </button>
+                            </div>
+
+                            <p x-show="hrStatusMsg" class="text-[11px] font-semibold text-emerald-800" x-text="hrStatusMsg"></p>
+                            <p x-show="hrErrorMsg" class="text-[11px] font-semibold text-rose-700" x-text="hrErrorMsg"></p>
+
+                            <template x-if="selectedProperty.workflow && (selectedProperty.workflow.homeReportValuationGbp || selectedProperty.workflow.hrSummary)">
+                                <div class="bg-white p-2.5 rounded-lg border border-emerald-200 text-xs space-y-1.5">
+                                    <div class="font-bold text-slate-800" x-text="selectedProperty.workflow.hrSummary"></div>
+                                    <template x-if="selectedProperty.workflow.hrRepairWarnings && selectedProperty.workflow.hrRepairWarnings.length > 0">
+                                        <div class="space-y-1 pt-1 border-t border-slate-100">
+                                            <template x-for="(warn, wIdx) in selectedProperty.workflow.hrRepairWarnings" :key="wIdx">
+                                                <div class="text-[11px] font-medium"
+                                                     :class="warn.includes('Cat 3') ? 'text-rose-700 font-bold' : 'text-amber-800'"
+                                                     x-text="'• ' + warn"></div>
+                                            </template>
+                                        </div>
+                                    </template>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- Dedicated In-Modal Commute Breakdown Panel -->
+                    <div class="bg-slate-900 text-slate-100 p-4 rounded-xl border border-emerald-500/50 space-y-3">
+                        <div class="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                                <h3 class="text-sm font-bold text-emerald-400 flex items-center gap-2">
+                                    <span>🤖 Grounded Commute AI Breakdown</span>
+                                    <span class="text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700/60 font-mono" x-text="llmStatus.configuredRankingModel || 'gemma4:e4b'">gemma4:e4b</span>
+                                </h3>
+                                <p class="text-[11px] text-slate-400 mt-0.5"
+                                   x-text="'ScotRail, Subway & NaPTAN bus transit advisory to ' + (filters.centerLocation || 'Glasgow Central')"></p>
+                            </div>
+                            <button @click="runCommuteResearch(selectedProperty)"
+                                    :disabled="isCommuteLoading(selectedProperty.listingId)"
+                                    class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-semibold transition flex items-center gap-1.5 shadow">
+                                <span x-show="isCommuteLoading(selectedProperty.listingId)" class="animate-spin inline-block">⏳</span>
+                                <span x-show="!isCommuteLoading(selectedProperty.listingId)">🤖</span>
+                                <span x-text="getCommuteButtonLabel(selectedProperty.listingId)"></span>
+                            </button>
+                        </div>
+
+                        <div x-show="isCommuteLoading(selectedProperty.listingId)"
+                             class="bg-emerald-950/60 border border-emerald-500/40 p-3 rounded-lg text-emerald-200 text-xs flex items-center gap-2.5 animate-pulse">
+                            <span class="text-lg">⚙️</span>
+                            <div>
+                                <span class="font-bold text-emerald-300">Gemma AI Commute Synthesis Running...</span>
+                                <p class="text-[11px] text-emerald-300/80">Querying ScotRail station schedules, SPT Subway loops, and NaPTAN bus stops (~10–15s)...</p>
+                            </div>
+                        </div>
+
+                        <div x-show="isCommuteVisible(selectedProperty.listingId)" class="space-y-2 pt-2 border-t border-slate-800">
+                            <div class="flex flex-wrap items-center justify-between gap-2">
+                                <span class="text-[11px] text-emerald-400 font-bold"
+                                      x-text="getCommuteReport(selectedProperty.listingId)?.modelUsed + ' → ' + getCommuteReport(selectedProperty.listingId)?.targetLocation"></span>
+                                <div class="flex items-center gap-2 text-[11px]">
+                                    <template x-if="getCommuteReport(selectedProperty.listingId)?.llmThinking">
+                                        <button @click="toggleThinking(selectedProperty.listingId)"
+                                                class="px-2 py-0.5 rounded bg-violet-950 hover:bg-violet-900 text-violet-300 border border-violet-700/60 font-medium">
+                                            <span x-text="commuteReports[selectedProperty.listingId]?.showThinking ? 'Hide Gemma Thinking' : '🧠 View Gemma Thinking'"></span>
+                                        </button>
+                                    </template>
+                                    <button @click="toggleDossier(selectedProperty.listingId)"
+                                            class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium">
+                                        <span x-text="commuteReports[selectedProperty.listingId]?.showDossier ? 'Hide Dossier' : '📋 View Verified Transit Dossier'"></span>
+                                    </button>
+                                </div>
+                            </div>
+                            <pre x-show="commuteReports[selectedProperty.listingId]?.showThinking && getCommuteReport(selectedProperty.listingId)?.llmThinking"
+                                 class="bg-violet-950/50 text-violet-200 font-mono text-[10px] p-3 rounded-lg border border-violet-800/60 overflow-x-auto whitespace-pre-wrap leading-relaxed"
+                                 x-text="'🧠 Gemma Internal Reasoning:\n\n' + getCommuteReport(selectedProperty.listingId)?.llmThinking"></pre>
+                            <div class="text-xs text-slate-200 leading-relaxed whitespace-pre-line"
+                                 x-text="getCommuteReport(selectedProperty.listingId)?.llmCommuteBreakdown"></div>
+                            <pre x-show="commuteReports[selectedProperty.listingId]?.showDossier"
+                                 class="bg-black/80 text-cyan-300 font-mono text-[10px] p-3 rounded-lg border border-slate-800 overflow-x-auto whitespace-pre-wrap leading-relaxed"
+                                 x-text="getCommuteReport(selectedProperty.listingId)?.groundedDossier"></pre>
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2">
+                        <div class="flex items-center justify-between">
+                            <p class="text-xs font-bold uppercase text-emerald-400">🤖 Local Vision LLM Response (Per-Image Notes &amp; Synthesized JSON)</p>
+                            <span class="text-[11px] font-mono text-slate-400" x-text="selectedProperty.listingId"></span>
+                        </div>
+                        <pre class="text-[11px] font-mono text-emerald-300 leading-relaxed whitespace-pre-wrap max-h-72 overflow-y-auto"
+                             x-text="selectedProperty.llmResponseLog ? selectedProperty.llmResponseLog : ('=== STORED LLM METADATA JSON ===\n' + JSON.stringify(selectedProperty.metadata, null, 2))"></pre>
+                    </div>
+
+                    <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-2">
+                        <p class="text-xs font-bold uppercase text-slate-500">Scraped Room-by-Room Description &amp; Dimensions</p>
+                        <p class="text-xs text-slate-700 leading-relaxed whitespace-pre-line" x-text="selectedProperty.rawDescription || 'Loading detailed description from local database...'"></p>
+                    </div>
+
+                    <div class="flex flex-wrap items-center justify-between gap-3 pt-2 border-t">
+                        <div class="flex gap-2">
+                            <a :href="selectedProperty.rightmoveUrl" target="_blank" rel="noopener"
+                               class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold">
+                                🔗 Open Live Portal Listing ↗
+                            </a>
+                            <a :href="'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(selectedProperty.address)"
+                               target="_blank" rel="noopener"
+                               class="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 text-xs font-semibold">
+                                📍 Open in Google Maps ↗
+                            </a>
+                        </div>
+                        <button @click="selectedProperty = null" class="px-4 py-2 rounded-lg bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-semibold">
+                            Close
+                        </button>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <!-- FEAT-05: Side-by-Side Property Comparison Modal (Up to 4 Homes) -->
+    <div x-cloak x-show="showCompareModal" x-transition
+         class="fixed inset-0 z-50 bg-slate-900/80 flex items-center justify-center p-4"
+         @keydown.escape.window="showCompareModal = false">
+        <div class="bg-white rounded-2xl max-w-6xl w-full max-h-[90vh] overflow-y-auto shadow-2xl border border-slate-200 p-6 space-y-4"
+             @click.outside="showCompareModal = false">
+            <div class="flex items-center justify-between border-b pb-3">
+                <div>
+                    <h2 class="text-lg font-bold text-slate-900">⚖️ Side-by-Side Glasgow Family Home Comparison</h2>
+                    <p class="text-xs text-slate-500">Comparing Scottish Upfront Cash &amp; LBTT, Commute Times, School Catchments, Floorplans &amp; Family Layout</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button @click="clearComparison()"
+                            class="px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-semibold">
+                        Clear Selection
+                    </button>
+                    <button @click="showCompareModal = false" class="text-slate-400 hover:text-slate-700 text-xl font-bold px-2">✕</button>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+                <template x-for="cp in comparedProperties()" :key="'cmp-' + cp.listingId">
+                    <div class="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-3 flex flex-col justify-between">
+                        <div class="space-y-2.5">
+                            <div class="relative">
+                                <img :src="cp.thumbnailUrl" class="w-full h-32 object-cover rounded-lg border border-slate-200 bg-white">
+                                <span class="absolute top-2 right-2 px-2 py-0.5 rounded-md text-white font-extrabold text-xs shadow"
+                                      :class="cp.overallScore >= 85 ? 'bg-emerald-600' : (cp.overallScore >= 70 ? 'bg-indigo-600' : 'bg-amber-500')"
+                                      x-text="cp.overallScore + '/100'"></span>
+                            </div>
+                            <div>
+                                <div class="font-bold text-slate-900 text-sm leading-snug" x-text="cp.address"></div>
+                                <div class="text-[11px] text-slate-500" x-text="cp.propertyType + ' • ' + cp.bedrooms + ' Beds • ' + (cp.metadata?.totalBathrooms || 1) + ' Baths'"></div>
+                            </div>
+
+                            <div class="bg-white p-2.5 rounded-lg border border-slate-200 space-y-1 tabular-nums">
+                                <div class="flex justify-between">
+                                    <span class="text-slate-500">Asking:</span>
+                                    <span class="font-bold text-slate-900" x-text="'£' + cp.priceGbp.toLocaleString()"></span>
+                                </div>
+                                <div class="flex justify-between" x-show="cp.costBreakdown">
+                                    <span class="text-slate-500">Est. Closing:</span>
+                                    <span class="font-semibold" x-text="'£' + (cp.costBreakdown?.estimatedClosingPriceGbp || 0).toLocaleString()"></span>
+                                </div>
+                                <div class="flex justify-between" x-show="cp.costBreakdown">
+                                    <span class="text-slate-500">LBTT + ADS:</span>
+                                    <span class="font-semibold" x-text="'£' + ((cp.costBreakdown?.lbttGbp || 0) + (cp.costBreakdown?.adsGbp || 0)).toLocaleString()"></span>
+                                </div>
+                                <div class="flex justify-between border-t pt-1 font-bold text-indigo-700" x-show="cp.costBreakdown">
+                                    <span>Upfront Cash:</span>
+                                    <span x-text="'£' + (cp.costBreakdown?.totalUpfrontCashGbp || 0).toLocaleString()"></span>
+                                </div>
+                                <div class="flex justify-between text-[11px]" x-show="cp.costBreakdown?.pricePerSqmGbp">
+                                    <span class="text-slate-500">Value (£/m²):</span>
+                                    <span class="font-bold text-emerald-700" x-text="'£' + cp.costBreakdown.pricePerSqmGbp.toLocaleString() + '/m²'"></span>
+                                </div>
+                            </div>
+
+                            <div class="bg-white p-2.5 rounded-lg border border-slate-200 space-y-1">
+                                <div class="font-bold text-indigo-900" x-text="'🚆 ' + cp.doorToTargetMins + 'm to ' + cp.targetDestination"></div>
+                                <div class="text-[11px] text-slate-600" x-text="cp.transitRouteSummary + ' (' + cp.frequencyLabel + ')'"></div>
+                                <template x-if="cp.secondCommute">
+                                    <div class="text-[11px] font-semibold text-violet-700 pt-1 border-t"
+                                         x-text="'👥 Partner B: ' + cp.secondCommute.doorToTargetMins + 'm to ' + cp.secondCommute.targetDestination"></div>
+                                </template>
+                            </div>
+
+                            <template x-if="cp.schoolAndArea">
+                                <div class="bg-white p-2.5 rounded-lg border border-slate-200 space-y-0.5">
+                                    <div class="font-bold text-slate-800" x-text="'🎓 ' + cp.schoolAndArea.nonDenomSecondary"></div>
+                                    <div class="text-[11px] text-slate-500"
+                                         x-text="cp.schoolAndArea.neighbourhoodName + ' • SIMD ' + cp.schoolAndArea.simdDecile + '/10 • ' + cp.schoolAndArea.councilTaxGuide"></div>
+                                </div>
+                            </template>
+
+                            <div class="bg-white p-2.5 rounded-lg border border-slate-200 space-y-1 text-[11px]">
+                                <div class="flex justify-between"><span>Downstairs WC:</span><span class="font-bold" x-text="cp.metadata?.hasDownstairsWc ? '✅ Yes' : '❌ No'"></span></div>
+                                <div class="flex justify-between"><span>Master En-Suite:</span><span class="font-bold" x-text="cp.metadata?.hasMasterEnsuite ? '✅ Yes' : '❌ No'"></span></div>
+                                <div class="flex justify-between"><span>Lounge-to-Garden:</span><span class="font-bold" x-text="cp.metadata?.directGardenAccessFromLiving ? '✅ Direct' : '⚠️ Indirect'"></span></div>
+                                <div class="flex justify-between"><span>Utility / Study:</span><span class="font-bold" x-text="(cp.metadata?.hasUtilityRoom ? 'Util ' : '') + (cp.metadata?.hasDedicatedStudyOrOffice ? 'Study' : (!cp.metadata?.hasUtilityRoom ? '—' : ''))"></span></div>
+                                <div class="flex justify-between"><span>Rear Extension Plot:</span><span class="font-bold" x-text="cp.metadata?.kitchenExtensionPotentialToRear ? '✅ Yes' : '—'"></span></div>
+                            </div>
+                        </div>
+
+                        <div class="flex gap-1.5 pt-2">
+                            <button @click="showCompareModal = false; openPropertyModal(cp)"
+                                    class="flex-1 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold">
+                                Inspect
+                            </button>
+                            <button @click="toggleCompare(cp)"
+                                    class="px-2.5 py-1.5 rounded-lg bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold">
+                                Remove
+                            </button>
+                        </div>
+                    </div>
+                </template>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

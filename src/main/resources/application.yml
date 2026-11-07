@@ -1,0 +1,54 @@
+server:
+  port: 8080
+  address: 127.0.0.1
+  compression:
+    enabled: true
+    mime-types: application/json,text/html,text/xml,text/plain,application/javascript,text/css
+    min-response-size: 1024
+
+logging:
+  file:
+    name: ./logs/property-agent.log
+  console:
+    threshold: WARN # Default WARN: keeps terminal quiet and fast. Set to OFF for 100% silent console. All INFO logs go to file.
+
+spring:
+  application:
+    name: glasgow-property-ai-agent
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: jdbc:postgresql://localhost:5432/glasgow_property_db
+    driver-class-name: org.postgresql.Driver
+    username: postgres
+    password: postgres
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 0
+    locations: classpath:db/migration
+  docker:
+    compose:
+      enabled: true
+      file: compose.yaml
+      lifecycle-management: start-only
+
+property-agent:
+  ollama:
+    base-url: http://127.0.0.1:11434
+    vision-model: gemma4:e4b
+    ranking-model: gemma4:e4b
+    embedding-model: nomic-embed-text
+    timeout-seconds: 90
+    floorplan-max-dimension: 1280
+    photo-max-dimension: 768
+    photo-batch-size: 3
+  rightmove:
+    # STATION^3809 = Glasgow Central Station, REGION^550 = Glasgow
+    default-location-identifier: STATION^3809
+    user-agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"

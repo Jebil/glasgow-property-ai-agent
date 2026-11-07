@@ -1,0 +1,12 @@
+package com.glasgow.propertyagent;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class PropertyAgentApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(PropertyAgentApplication.class, args);
+    }
+}
