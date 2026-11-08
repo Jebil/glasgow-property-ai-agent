@@ -103,7 +103,11 @@ public class HeuristicMetadataExtractor {
             drivewayCapacity = 2;
         } else if (lower.contains("triple driveway") || lower.contains("three-car") || lower.contains("three car")) {
             drivewayCapacity = 3;
-        } else if (lower.contains("driveway") || lower.contains("monoblock") || lower.contains("off-street parking") || lower.contains("allocated parking")) {
+        } else if (lower.contains("driveway") || lower.contains("monoblock") || lower.contains("off-street parking")
+                || lower.contains("off street parking") || lower.contains("allocated parking")
+                || lower.contains("dedicated parking") || lower.contains("private parking")
+                || lower.contains("residents parking") || lower.contains("resident parking")
+                || lower.contains("allocated space") || lower.contains("parking space")) {
             drivewayCapacity = 1;
         }
 

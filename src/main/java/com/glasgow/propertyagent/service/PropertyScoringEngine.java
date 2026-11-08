@@ -53,7 +53,10 @@ public class PropertyScoringEngine {
     private static final Pattern SOUTH_GARDEN_PATTERN = Pattern.compile("\\b(south-facing|south facing|south-west|sunny rear garden)\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern UTILITY_PATTERN = Pattern.compile("\\b(utility room|utility space|dedicated utility)\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern STUDY_PATTERN = Pattern.compile("\\b(home office|study room|dedicated study|dedicated office)\\b", Pattern.CASE_INSENSITIVE);
-    private static final Pattern DRIVEWAY_PATTERN = Pattern.compile("\\b(driveway|2\\+ cars|multi-car parking|off-street parking)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern DRIVEWAY_PATTERN = Pattern.compile(
+        "\\b(driveway|2\\+ cars|multi-car parking|off-street parking|dedicated parking|private parking|parking space|allocated parking)\\b",
+        Pattern.CASE_INSENSITIVE
+    );
     private static final Pattern CUL_DE_SAC_PATTERN = Pattern.compile("\\b(cul-de-sac|cul de sac|quiet cul)\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern WALKIN_PATTERN = Pattern.compile("\\b(walk-in|no major diy|turnkey|immaculate condition)\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern NEGATION_PREFIX_PATTERN = Pattern.compile("^(?:no|not|without|avoid|exclude)\\s+(.+)$");
@@ -538,13 +541,41 @@ public class PropertyScoringEngine {
         }
 
         if (DRIVEWAY_PATTERN.matcher(ruleLower).find()) {
+            boolean multiCarRequired = ruleLower.contains("2+") || ruleLower.contains("multi-car")
+                || ruleLower.contains("two car") || ruleLower.contains("2 car") || ruleLower.contains("multiple cars");
+            boolean hasGarage = metadata.garageType() != null && !metadata.garageType().isBlank() && !"None".equalsIgnoreCase(metadata.garageType());
+            int capacity = metadata.drivewayCarCapacity() != null ? metadata.drivewayCarCapacity() : (hasGarage ? 1 : 0);
+
             if (isFlat) {
-                return new RuleEvaluation(MatchOutcome.PARTIAL_MATCH, "Flat includes allocated / communal resident parking rather than private driveway");
+                String descLower = entity.getRawDescription() != null ? entity.getRawDescription().toLowerCase() : "";
+                boolean hasAllocated = descLower.contains("allocated parking") || descLower.contains("private parking")
+                    || descLower.contains("designated parking") || descLower.contains("residents parking")
+                    || descLower.contains("resident parking") || descLower.contains("allocated space")
+                    || hasGarage || capacity >= 1;
+                if (hasAllocated && !multiCarRequired) {
+                    return new RuleEvaluation(MatchOutcome.FULL_MATCH, "Allocated / private resident parking confirmed for flat");
+                }
+                return new RuleEvaluation(MatchOutcome.PARTIAL_MATCH, "Flat includes communal / on-street resident parking rather than private multi-car driveway");
             }
-            if (metadata.drivewayCarCapacity() != null && metadata.drivewayCarCapacity() >= 2) {
-                return new RuleEvaluation(MatchOutcome.FULL_MATCH, "Private driveway (" + metadata.drivewayCarCapacity() + "+ cars)");
+
+            if (multiCarRequired) {
+                if (capacity >= 2) {
+                    return new RuleEvaluation(MatchOutcome.FULL_MATCH, "Private multi-car driveway (" + capacity + "+ cars)");
+                }
+                return new RuleEvaluation(MatchOutcome.NO_MATCH, "Multi-car driveway (2+ cars) not confirmed");
+            } else {
+                if (capacity >= 1) {
+                    String detail = capacity > 1
+                        ? ("driveway for " + capacity + " cars")
+                        : (hasGarage ? (metadata.garageType() + " garage & driveway") : "private driveway / dedicated parking");
+                    return new RuleEvaluation(MatchOutcome.FULL_MATCH, "Off-street parking confirmed (" + detail + ")");
+                }
+                String descLower = entity.getRawDescription() != null ? entity.getRawDescription().toLowerCase() : "";
+                if (descLower.contains("driveway") || descLower.contains("allocated parking") || descLower.contains("off-street parking") || descLower.contains("off street parking") || hasGarage) {
+                    return new RuleEvaluation(MatchOutcome.FULL_MATCH, "Off-street parking / driveway confirmed in listing");
+                }
+                return new RuleEvaluation(MatchOutcome.NO_MATCH, "Dedicated off-street parking or driveway not confirmed");
             }
-            return new RuleEvaluation(MatchOutcome.NO_MATCH, "Multi-car driveway not confirmed");
         }
 
         if (CUL_DE_SAC_PATTERN.matcher(ruleLower).find()) {

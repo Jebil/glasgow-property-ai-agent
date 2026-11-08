@@ -14,6 +14,7 @@ target/
 ### Application data & logs ###
 logs/
 *.log
+logFile_IS_UNDEFINED
 data/
 *.bin
 

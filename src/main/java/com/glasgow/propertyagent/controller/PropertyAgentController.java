@@ -456,6 +456,7 @@ public class PropertyAgentController {
             "Master bedroom has attached en-suite",
             "Living room direct access & sightline to garden",
             "Plot allows outward rear kitchen extension into garden",
+            "Dedicated off-street parking or private driveway",
             "Enclosed child-safe flat rear lawn",
             "South or South-West facing garden",
             "Dedicated utility room",
