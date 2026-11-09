@@ -2,6 +2,7 @@ package com.glasgow.propertyagent;
 
 import com.glasgow.propertyagent.service.ChatAssistantService;
 import com.glasgow.propertyagent.service.OllamaApiClient;
+import com.glasgow.propertyagent.service.ReadOnlySqlExecutor;
 import com.glasgow.propertyagent.service.WebSearchClient;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
@@ -40,7 +41,7 @@ class ChatAssistantServiceTest {
     }
 
     private ChatAssistantService service(FakeOllama fake, boolean webEnabled) {
-        return new ChatAssistantService(fake, om, null, null, new WebSearchClient(webEnabled, 5000), "gemma4:e4b");
+        return new ChatAssistantService(fake, om, null, null, null, new WebSearchClient(webEnabled, 5000), "gemma4:e4b");
     }
 
     private ChatAssistantService.ChatRequest request(String userText) {
@@ -57,6 +58,8 @@ class ChatAssistantServiceTest {
         t.chatLoopRunsToolThenAnswersAndSeesCurrentFilters();
         t.chatFallsBackWhenModelDoesNotSupportTools();
         t.webResultParsingAndSsrfGuard();
+        t.sqlValidationAcceptsOnlySingleReadOnlySelects();
+        t.runSqlToolReturnsRowsAndFeedsErrorsBackToModel();
         System.out.println("ALL ChatAssistantServiceTest checks PASSED successfully!");
     }
 
@@ -163,5 +166,67 @@ class ChatAssistantServiceTest {
 
         assertThrows(IllegalArgumentException.class, () -> WebSearchClient.assertPublicHttpUri(URI.create("http://127.0.0.1:8080/x")));
         assertThrows(IllegalArgumentException.class, () -> WebSearchClient.assertPublicHttpUri(URI.create("file:///etc/passwd")));
+    }
+
+    /** Fake executor: no real database, records SQL and returns canned rows. */
+    static class FakeSql extends ReadOnlySqlExecutor {
+        final List<String> executed = new ArrayList<>();
+        FakeSql() { super(null, 100, 8000, 400); }
+        @Override public boolean isAvailable() { return true; }
+        @Override public String describeSchema() { return "- indexed_properties(listing_id text, price_gbp integer)  -- 3 rows\n"; }
+        @Override public QueryResult execute(String rawSql) throws Exception {
+            String sql = validate(rawSql);
+            executed.add(sql);
+            if (sql.contains("bad_column")) throw new RuntimeException("ERROR: column \"bad_column\" does not exist");
+            return new QueryResult(List.of("avg_price"), List.of(List.of(312500)), false, 3);
+        }
+    }
+
+    @Test
+    void sqlValidationAcceptsOnlySingleReadOnlySelects() {
+        assertDoesNotThrow(() -> ReadOnlySqlExecutor.validate("SELECT count(*) FROM indexed_properties;"));
+        assertDoesNotThrow(() -> ReadOnlySqlExecutor.validate("WITH x AS (SELECT 1) SELECT * FROM x"));
+        assertDoesNotThrow(() -> ReadOnlySqlExecutor.validate("select * from indexed_properties where title ilike '%delete; drop%' -- ok"));
+        assertDoesNotThrow(() -> ReadOnlySqlExecutor.validate("SELECT analyzed_at, created_at FROM indexed_properties"));
+        for (String bad : List.of(
+                "DELETE FROM indexed_properties",
+                "SELECT 1; DROP TABLE indexed_properties",
+                "UPDATE indexed_properties SET price_gbp = 1",
+                "SELECT pg_sleep(100)",
+                "WITH d AS (DELETE FROM indexed_properties RETURNING *) SELECT * FROM d",
+                "SELECT /* hidden */ 1; /* x */ INSERT INTO t VALUES (1)",
+                "COPY indexed_properties TO PROGRAM 'calc'",
+                "SELECT pg_read_file('/etc/passwd')",
+                "  ",
+                "EXPLAIN ANALYZE SELECT 1")) {
+            assertThrows(IllegalArgumentException.class, () -> ReadOnlySqlExecutor.validate(bad), "should reject: " + bad);
+        }
+    }
+
+    @Test
+    void runSqlToolReturnsRowsAndFeedsErrorsBackToModel() {
+        FakeOllama fake = new FakeOllama(om);
+        FakeSql sql = new FakeSql();
+        ChatAssistantService svc = new ChatAssistantService(fake, om, null, null, sql, new WebSearchClient(false, 5000), "gemma4:e4b");
+
+        assertTrue(svc.toolDefinitions().stream().anyMatch(t -> "run_sql".equals(((Map<?, ?>) t.get("function")).get("name"))));
+        assertTrue(svc.buildSystemPrompt(request("x")).contains("indexed_properties(listing_id text"));
+
+        String ok = svc.executeTool("run_sql", Map.of("sql", "SELECT avg(price_gbp) AS avg_price FROM indexed_properties"), new ArrayList<>());
+        assertTrue(ok.contains("312500") && ok.contains("avg_price"));
+
+        String rejected = svc.executeTool("run_sql", Map.of("sql", "DROP TABLE indexed_properties"), new ArrayList<>());
+        assertTrue(rejected.contains("Query rejected"));
+        assertEquals(1, sql.executed.size());   // the rejected statement never reached the executor
+
+        String err = svc.executeTool("run_sql", Map.of("sql", "SELECT bad_column FROM indexed_properties"), new ArrayList<>());
+        assertTrue(err.contains("SQL error") && err.contains("does not exist"));
+
+        // Full loop: model runs SQL, then answers from the rows.
+        fake.script.add("{\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"function\":{\"name\":\"run_sql\",\"arguments\":{\"sql\":\"SELECT avg(price_gbp) AS avg_price FROM indexed_properties\"}}}]}}");
+        fake.script.add("{\"message\":{\"role\":\"assistant\",\"content\":\"The average asking price is about £312,500.\"}}");
+        ChatAssistantService.ChatResponse resp = svc.chat(request("what is the average price?"));
+        assertTrue(resp.reply().contains("312,500"));
+        assertTrue(resp.toolTrace().get(0).startsWith("run_sql"));
     }
 }

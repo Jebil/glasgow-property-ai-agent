@@ -60,6 +60,7 @@ public class ChatAssistantService {
     private final ObjectMapper objectMapper;
     private final JdbcClient jdbcClient;
     private final PropertyEmbeddingService embeddingService;
+    private final ReadOnlySqlExecutor sqlExecutor;
     private final WebSearchClient webClient;
     private final String chatModel;
 
@@ -69,12 +70,14 @@ public class ChatAssistantService {
             ObjectMapper objectMapper,
             JdbcTemplate jdbcTemplate,
             PropertyEmbeddingService embeddingService,
+            ReadOnlySqlExecutor sqlExecutor,
             WebSearchClient webClient,
             @Value("${property-agent.ollama.chat-model:${property-agent.ollama.ranking-model:gemma4:e4b}}") String chatModel) {
         this.ollama = ollama;
         this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper();
         this.jdbcClient = jdbcTemplate != null ? JdbcClient.create(jdbcTemplate) : null;
         this.embeddingService = embeddingService;
+        this.sqlExecutor = sqlExecutor;
         this.webClient = webClient;
         this.chatModel = chatModel;
     }
@@ -176,7 +179,7 @@ public class ChatAssistantService {
             You are the AI assistant inside the 'Glasgow Property AI Agent', a local app that ranks houses for sale \
             around Greater Glasgow for a family buyer. Today is %s.
             Rules:
-            - Property data comes ONLY from the local indexed database via search_properties / get_property. Never invent \
+            - Property data comes ONLY from the local database via run_sql / search_properties / get_property. Never invent \
             listings, prices or addresses. If a tool returns nothing, say so.
             - To change what the user sees (price cap, bedrooms, property types, commute, criteria such as parking), call \
             apply_filters. Only do it when the user asks for it or clearly agrees.
@@ -185,6 +188,19 @@ public class ChatAssistantService {
             URL. Do not guess current rates from memory.
             - Be concise (a short paragraph or a few bullets). Prices in GBP. Mention listing addresses so the user can find them.
             """.formatted(LocalDate.now(), webClient != null && webClient.isEnabled() ? " (and fetch_webpage for details)" : " (currently disabled — say you cannot browse)"));
+
+        if (sqlExecutor != null && sqlExecutor.isAvailable()) {
+            sb.append("""
+
+                DATABASE ACCESS: you can query the whole PostgreSQL database read-only with run_sql (one SELECT per call). \
+                Prefer run_sql for counts, averages, price drops (previous_price_gbp > price_gbp), comparisons and any custom \
+                filter; use search_properties for fuzzy text/semantic matching. Write valid PostgreSQL, always include LIMIT, \
+                select only the columns you need (avoid the 'embedding', 'llm_response_log' and raw description columns unless \
+                essential), and base answers strictly on returned rows. If a query errors, read the error and retry.
+                SCHEMA (table(column type, ...)  -- row count):
+                """);
+            sb.append(sqlExecutor.describeSchema());
+        }
 
         sb.append("\nCURRENT UI FILTERS (what the user currently has applied):\n");
         sb.append(truncate(safeJson(request.filters() == null ? Map.of() : request.filters()), 3500)).append('\n');
@@ -249,6 +265,15 @@ public class ChatAssistantService {
             "Change the filters/criteria shown in the app UI and re-run the ranking. Include only the fields to change.",
             filterProps, List.of()));
 
+        if (sqlExecutor != null && sqlExecutor.isAvailable()) {
+            tools.add(tool("run_sql",
+                "Run ONE read-only PostgreSQL SELECT (or WITH ... SELECT) against the full app database using the schema "
+                    + "given in the system prompt. Use for aggregates, comparisons, price drops, custom filters and analytics. "
+                    + "Always add LIMIT. Returns columns and rows (max 100). If it errors, fix the SQL and retry.",
+                Map.of("sql", prop("string", "A single SELECT statement, no trailing semicolon")),
+                List.of("sql")));
+        }
+
         if (webClient != null && webClient.isEnabled()) {
             tools.add(tool("web_search",
                 "Search the internet (UK results) for current facts such as interest rates, LBTT/ADS rules, schools, area info.",
@@ -266,6 +291,7 @@ public class ChatAssistantService {
                 case "search_properties" -> toolSearchProperties(args);
                 case "get_property" -> toolGetProperty(args);
                 case "apply_filters" -> toolApplyFilters(args, actions);
+                case "run_sql" -> toolRunSql(args);
                 case "web_search" -> toolWebSearch(args);
                 case "fetch_webpage" -> toolFetchWebpage(args);
                 default -> "{\"error\":\"Unknown tool: " + name + "\"}";
@@ -424,6 +450,26 @@ public class ChatAssistantService {
         action.put("clearCriteria", clear);
         actions.add(action);
         return "{\"status\":\"queued\",\"note\":\"The UI will apply these changes and re-rank now.\",\"applied\":" + safeJson(action) + "}";
+    }
+
+    private String toolRunSql(Map<String, Object> args) throws Exception {
+        if (sqlExecutor == null || !sqlExecutor.isAvailable()) return "{\"error\":\"Database unavailable\"}";
+        String sql = str(args.get("sql"));
+        try {
+            ReadOnlySqlExecutor.QueryResult r = sqlExecutor.execute(sql);
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("columns", r.columns());
+            out.put("rows", r.rows());
+            out.put("rowCount", r.rows().size());
+            if (r.truncated()) out.put("note", "Result truncated at the row cap; add filters/LIMIT or aggregate.");
+            return truncate(safeJson(out), 12000);
+        } catch (IllegalArgumentException rejected) {
+            return "{\"error\":" + safeJson("Query rejected: " + rejected.getMessage()) + "}";
+        } catch (Exception e) {
+            // SQL errors (bad column, syntax, timeout) go back to the model so it can correct the query
+            String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            return "{\"error\":" + safeJson("SQL error: " + truncate(msg.replaceAll("\\s+", " "), 400)) + "}";
+        }
     }
 
     private String toolWebSearch(Map<String, Object> args) throws Exception {
