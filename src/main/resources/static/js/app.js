@@ -46,6 +46,17 @@ window.propertyAgentApp = function propertyAgentApp() {
         commuteReports: {},
         filters: State.createInitialFilters(),
 
+        // AI chat assistant
+        chatOpen: false,
+        chatInput: '',
+        chatBusy: false,
+        chatMessages: [],
+        chatHints: [
+            'Summarise my current filters',
+            'Show detached homes under my max price with a driveway',
+            'What are current mortgage rates and ADS in Scotland?'
+        ],
+
         // Phase 3 UI & Domain State (FEAT-01 .. FEAT-07)
         showSecondCommuter: false,
         showScottishFinance: true,
@@ -798,6 +809,86 @@ window.propertyAgentApp = function propertyAgentApp() {
             this.filters.minBedrooms = 1;
             this.filters.requireFreeStationParking = false;
             this.filters.requireStepFreeCategoryA = false;
+            this.runRanker();
+        },
+
+        // ---- AI chat assistant ----
+        toggleChat() {
+            this.chatOpen = !this.chatOpen;
+            if (this.chatOpen) this.scrollChat();
+        },
+
+        clearChat() {
+            this.chatMessages = [];
+        },
+
+        scrollChat() {
+            this.$nextTick(() => {
+                const el = this.$refs.chatBody;
+                if (el) el.scrollTop = el.scrollHeight;
+            });
+        },
+
+        buildChatContext() {
+            const f = JSON.parse(JSON.stringify(this.filters));
+            f.resultsShown = (this.results || []).length;
+            f.totalIndexedProperties = this.totalIndexedCount;
+            const top = (this.results || []).slice(0, 8).map(r => ({
+                listingId: r.listingId,
+                address: r.address,
+                type: r.propertyType,
+                priceGbp: r.priceGbp,
+                bedrooms: r.bedrooms,
+                score: r.overallScore,
+                doorToTargetMins: r.doorToTargetMins,
+                station: r.nearestStationName
+            }));
+            return { filters: f, topResults: top };
+        },
+
+        async sendChat() {
+            const text = (this.chatInput || '').trim();
+            if (!text || this.chatBusy) return;
+            this.chatMessages.push({ role: 'user', content: text });
+            this.chatInput = '';
+            this.chatBusy = true;
+            this.scrollChat();
+            try {
+                const ctx = this.buildChatContext();
+                const data = await Api.chat({
+                    messages: this.chatMessages.map(m => ({ role: m.role, content: m.content })),
+                    filters: ctx.filters,
+                    topResults: ctx.topResults
+                });
+                this.chatMessages.push({ role: 'assistant', content: data.reply, tools: data.toolTrace || [] });
+                for (const action of (data.actions || [])) {
+                    this.applyChatAction(action);
+                }
+            } catch (e) {
+                this.chatMessages.push({ role: 'assistant', content: 'Sorry, the assistant request failed: ' + e.message });
+            } finally {
+                this.chatBusy = false;
+                this.scrollChat();
+            }
+        },
+
+        applyChatAction(action) {
+            if (!action || action.type !== 'apply_filters') return;
+            const allowed = ['maxPrice', 'minBedrooms', 'radiusMiles', 'centerLocation', 'maxDoorToCentralCommuteMins',
+                'minServicesPerHour', 'requireFreeStationParking', 'requireStepFreeCategoryA', 'propertyTypes', 'transportModes'];
+            for (const key of allowed) {
+                if (action.filters && action.filters[key] !== undefined) {
+                    this.filters[key] = action.filters[key];
+                }
+            }
+            if (action.clearCriteria) {
+                this.filters.dynamicCriteria = [];
+            }
+            for (const c of (action.addCriteria || [])) {
+                const exists = this.filters.dynamicCriteria.some(x => x.rule.toLowerCase() === c.rule.toLowerCase());
+                if (!exists) this.filters.dynamicCriteria.unshift({ rule: c.rule, priority: c.priority || 'HIGH' });
+            }
+            this.filters.bypassHardFilters = false;
             this.runRanker();
         },
 

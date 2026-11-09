@@ -52,6 +52,10 @@ property-agent:
     # STATION^3809 = Glasgow Central Station, REGION^550 = Glasgow
     default-location-identifier: STATION^3809
     user-agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+  chat:
+    # Gemma cannot browse by itself; when enabled the backend runs web_search / fetch_webpage tools for it.
+    web-search-enabled: true
+    max-page-chars: 5000
   schedule:
     enabled: true
     cron: "0 0 4 * * *" # Daily at 4:00 AM

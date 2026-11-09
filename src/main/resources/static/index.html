@@ -1408,5 +1408,63 @@
             </div>
         </div>
     </div>
+
+    <!-- ===== AI Chat Assistant (floating) ===== -->
+    <style>
+        [x-cloak] { display: none !important; }
+        .ai-chat-fab { position: fixed; right: 20px; bottom: 20px; z-index: 60; border: 0; cursor: pointer;
+            background: #4f46e5; color: #fff; font-weight: 700; font-size: 14px; padding: 12px 18px;
+            border-radius: 999px; box-shadow: 0 6px 20px rgba(79,70,229,.45); }
+        .ai-chat-fab:hover { background: #4338ca; }
+        .ai-chat-panel { position: fixed; right: 20px; bottom: 76px; z-index: 60; width: 400px; max-width: calc(100vw - 24px);
+            height: 560px; max-height: calc(100vh - 100px); background: #fff; border: 1px solid #cbd5e1; border-radius: 14px;
+            box-shadow: 0 12px 40px rgba(15,23,42,.28); display: flex; flex-direction: column; overflow: hidden; }
+        .ai-chat-head { background: #4f46e5; color: #fff; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; }
+        .ai-chat-head small { opacity: .85; display: block; font-size: 11px; font-weight: 400; }
+        .ai-chat-head button { background: transparent; border: 0; color: #fff; cursor: pointer; font-size: 12px; margin-left: 10px; }
+        .ai-chat-body { flex: 1; overflow-y: auto; padding: 12px; background: #f8fafc; }
+        .ai-chat-msg { margin-bottom: 10px; max-width: 92%; padding: 8px 11px; border-radius: 10px; font-size: 13px; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; }
+        .ai-chat-msg.user { margin-left: auto; background: #4f46e5; color: #fff; }
+        .ai-chat-msg.assistant { background: #fff; border: 1px solid #e2e8f0; color: #1e293b; }
+        .ai-chat-tools { font-size: 10px; color: #64748b; margin: -4px 0 10px 4px; }
+        .ai-chat-hints { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+        .ai-chat-hints button { font-size: 11px; background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; border-radius: 999px; padding: 3px 9px; cursor: pointer; }
+        .ai-chat-foot { display: flex; gap: 6px; padding: 10px; border-top: 1px solid #e2e8f0; background: #fff; }
+        .ai-chat-foot textarea { flex: 1; resize: none; border: 1px solid #cbd5e1; border-radius: 8px; padding: 7px 9px; font-size: 13px; font-family: inherit; }
+        .ai-chat-foot button { background: #4f46e5; color: #fff; border: 0; border-radius: 8px; padding: 0 14px; font-weight: 600; cursor: pointer; }
+        .ai-chat-foot button:disabled { background: #a5b4fc; cursor: not-allowed; }
+    </style>
+    <button class="ai-chat-fab" x-show="!chatOpen" @click="toggleChat()" x-cloak>💬 Ask AI</button>
+    <div class="ai-chat-panel" x-show="chatOpen" x-cloak>
+        <div class="ai-chat-head">
+            <div>💬 Property AI Assistant
+                <small>Sees your filters &amp; top results • can search listings, change filters, browse the web</small>
+            </div>
+            <div><button @click="clearChat()" title="Clear conversation">Clear</button><button @click="toggleChat()" title="Close">✕</button></div>
+        </div>
+        <div class="ai-chat-body" x-ref="chatBody">
+            <template x-if="chatMessages.length === 0">
+                <div class="ai-chat-msg assistant">Hi! Ask me to find properties, explain your current filters, or answer buying questions (rates, LBTT, ADS…).
+                    <div class="ai-chat-hints">
+                        <template x-for="h in chatHints" :key="h">
+                            <button @click="chatInput = h; sendChat()" x-text="h"></button>
+                        </template>
+                    </div>
+                </div>
+            </template>
+            <template x-for="(m, i) in chatMessages" :key="i">
+                <div>
+                    <div class="ai-chat-msg" :class="m.role" x-text="m.content"></div>
+                    <div class="ai-chat-tools" x-show="m.tools && m.tools.length" x-text="'🔧 ' + (m.tools || []).map(t => t.split(' ')[0]).join(', ')"></div>
+                </div>
+            </template>
+            <div class="ai-chat-msg assistant" x-show="chatBusy">Thinking…</div>
+        </div>
+        <div class="ai-chat-foot">
+            <textarea rows="2" x-model="chatInput" placeholder="e.g. 3-bed detached under £350k with a driveway"
+                      @keydown.enter.prevent="if (!$event.shiftKey) sendChat()"></textarea>
+            <button @click="sendChat()" :disabled="chatBusy || !chatInput.trim()">Send</button>
+        </div>
+    </div>
 </body>
 </html>
