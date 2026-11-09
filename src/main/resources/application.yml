@@ -52,3 +52,12 @@ property-agent:
     # STATION^3809 = Glasgow Central Station, REGION^550 = Glasgow
     default-location-identifier: STATION^3809
     user-agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+  schedule:
+    enabled: true
+    cron: "0 0 4 * * *" # Daily at 4:00 AM
+    center-location: "Glasgow Central"
+    radius-miles: 15.0
+    portal-provider: "all" # Scrape both Rightmove & OnTheMarket for new properties
+    max-price: 0 # 0 = no price cap
+    min-bedrooms: 0 # 0 = no min bedrooms
+    property-types: [] # Empty = all property types (Detached, Semi-Detached, Terraced, Bungalow, Flat)

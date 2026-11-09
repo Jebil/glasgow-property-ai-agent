@@ -13,6 +13,7 @@ import com.glasgow.propertyagent.service.BuyerWorkflowService;
 import com.glasgow.propertyagent.service.GlasgowSchoolAndAreaService;
 import com.glasgow.propertyagent.service.HomeReportAnalyzerService;
 import com.glasgow.propertyagent.service.OllamaAgentService;
+import com.glasgow.propertyagent.service.PropertyDailyFetchScheduler;
 import com.glasgow.propertyagent.service.PropertyEmbeddingService;
 import com.glasgow.propertyagent.service.PropertyMetadataCache;
 import com.glasgow.propertyagent.service.RightmoveScraperService;
@@ -101,6 +102,13 @@ public class PropertyAgentController {
 
     // Cached dynamic search suggestions across database
     private volatile List<String> cachedSuggestions = null;
+
+    private PropertyDailyFetchScheduler scheduler;
+
+    @Autowired(required = false)
+    public void setDailyFetchScheduler(PropertyDailyFetchScheduler scheduler) {
+        this.scheduler = scheduler;
+    }
 
     public PropertyAgentController(
             IndexedPropertyRepository repository,
@@ -520,6 +528,24 @@ public class PropertyAgentController {
             request.maxPrice(),
             request.minBedrooms()
         );
+        HttpStatus code = status.accepted() ? HttpStatus.ACCEPTED : HttpStatus.CONFLICT;
+        return ResponseEntity.status(code).body(status);
+    }
+
+    @GetMapping("/scrape/schedule")
+    public ResponseEntity<?> getScheduleInfo() {
+        if (scheduler == null) {
+            return ResponseEntity.ok(Map.of("enabled", false, "status", "Scheduler not initialized in this environment"));
+        }
+        return ResponseEntity.ok(scheduler.getScheduleInfo());
+    }
+
+    @PostMapping("/scrape/schedule/trigger")
+    public ResponseEntity<RightmoveScraperService.ScrapeJobStatus> triggerScheduledFetch() {
+        if (scheduler == null) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
+        }
+        RightmoveScraperService.ScrapeJobStatus status = scheduler.triggerManualFetch();
         HttpStatus code = status.accepted() ? HttpStatus.ACCEPTED : HttpStatus.CONFLICT;
         return ResponseEntity.status(code).body(status);
     }
