@@ -208,6 +208,7 @@ public class ChatAssistantService {
                - To check recent system logs or error traces, call get_logs.
                - To shortlist, hide, add private buyer notes, or record viewing status, call update_buyer_workflow.
                - To pop open a property's detail/floorplan modal in the user's browser, call open_property_in_ui.
+               - To clear or reset the active chat session history in the UI, call clear_session.
                - To change search criteria or filter cutoffs in the UI, call apply_filters.
             4. For external facts (mortgage interest rates, Scottish LBTT/ADS tax rules, current news) call web_search%s, then cite the source URL.
             5. Be concise (a short paragraph or bullet points). Format prices in GBP (£).
@@ -355,6 +356,10 @@ public class ChatAssistantService {
             Map.of("listing_id", prop("string", "Listing ID")),
             List.of("listing_id")));
 
+        tools.add(tool("clear_session",
+            "Clear or reset the current AI chat session and conversation history in the user interface. Use when the user asks to clear session, reset chat, start over, or forget previous conversation.",
+            Map.of(), List.of()));
+
         if (webClient != null && webClient.isEnabled()) {
             tools.add(tool("web_search",
                 "Search the internet (UK results) for current facts such as interest rates, LBTT/ADS rules, schools, area info.",
@@ -380,6 +385,7 @@ public class ChatAssistantService {
                 case "cancel_job" -> toolCancelJob(args);
                 case "update_buyer_workflow" -> toolUpdateBuyerWorkflow(args, actions);
                 case "open_property_in_ui" -> toolOpenPropertyInUi(args, actions);
+                case "clear_session" -> toolClearSession(args, actions);
                 case "web_search" -> toolWebSearch(args);
                 case "fetch_webpage" -> toolFetchWebpage(args);
                 default -> "{\"error\":\"Unknown tool: " + name + "\"}";
@@ -650,6 +656,11 @@ public class ChatAssistantService {
         if (listingId.isBlank()) return "{\"error\":\"listing_id is required\"}";
         actions.add(Map.of("type", "open_property", "listingId", listingId));
         return "{\"status\":\"queued\",\"note\":\"UI will open modal for listing " + listingId + "\"}";
+    }
+
+    private String toolClearSession(Map<String, Object> args, List<Map<String, Object>> actions) {
+        actions.add(Map.of("type", "clear_session"));
+        return "{\"status\":\"cleared\",\"note\":\"Active AI chat session and conversation history cleared.\"}";
     }
 
     private String toolApplyFilters(Map<String, Object> args, List<Map<String, Object>> actions) {

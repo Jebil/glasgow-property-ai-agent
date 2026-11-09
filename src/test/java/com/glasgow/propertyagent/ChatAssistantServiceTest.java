@@ -217,6 +217,7 @@ class ChatAssistantServiceTest {
         t.triggerFetchStartsScraperAndQueuesFetchStartedAction();
         t.updateBuyerWorkflowUpdatesStateAndQueuesRefreshAction();
         t.openPropertyInUiQueuesOpenPropertyAction();
+        t.clearSessionToolEmitsClearSessionAction();
         System.out.println("ALL ChatAssistantServiceTest checks PASSED successfully!");
     }
 
@@ -248,6 +249,7 @@ class ChatAssistantServiceTest {
         assertTrue(toolNames.contains("cancel_job"));
         assertTrue(toolNames.contains("update_buyer_workflow"));
         assertTrue(toolNames.contains("open_property_in_ui"));
+        assertTrue(toolNames.contains("clear_session"));
         assertTrue(toolNames.contains("get_logs"));
         assertTrue(toolNames.contains("get_property_evidence"));
     }
@@ -570,5 +572,31 @@ class ChatAssistantServiceTest {
         assertEquals(1, actions.size());
         assertEquals("open_property", actions.get(0).get("type"));
         assertEquals("RM-777", actions.get(0).get("listingId"));
+    }
+
+    @Test
+    void clearSessionToolEmitsClearSessionAction() {
+        ChatAssistantService svc = service(new FakeOllama(om), false);
+        List<Map<String, Object>> actions = new ArrayList<>();
+
+        String result = svc.executeTool("clear_session", Map.of(), actions);
+        assertTrue(result.contains("cleared"));
+        assertEquals(1, actions.size());
+        assertEquals("clear_session", actions.get(0).get("type"));
+
+        // End-to-end Ollama script test
+        FakeOllama fake = new FakeOllama(om);
+        fake.script.add("""
+            {"message":{"role":"assistant","content":"","tool_calls":[
+              {"function":{"name":"clear_session","arguments":{}}}]}}
+            """);
+        fake.script.add("""
+            {"message":{"role":"assistant","content":"I have cleared the active session. How can I help you afresh?"}}
+            """);
+        ChatAssistantService svcWithOllama = service(fake, false);
+        ChatAssistantService.ChatResponse resp = svcWithOllama.chat(request("please clear our session and start over"));
+        assertEquals(1, resp.actions().size());
+        assertEquals("clear_session", resp.actions().get(0).get("type"));
+        assertTrue(resp.reply().contains("cleared the active session"));
     }
 }

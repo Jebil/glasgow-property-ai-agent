@@ -822,6 +822,8 @@ window.propertyAgentApp = function propertyAgentApp() {
 
         clearChat() {
             this.chatMessages = [];
+            this.chatInput = '';
+            this.chatBusy = false;
         },
 
         scrollChat() {
@@ -851,6 +853,11 @@ window.propertyAgentApp = function propertyAgentApp() {
         async sendChat() {
             const text = (this.chatInput || '').trim();
             if (!text || this.chatBusy) return;
+            const lower = text.toLowerCase();
+            if (text === '/clear' || lower === 'clear' || lower === 'clear chat' || lower === 'clear session' || lower === 'reset chat' || lower === 'reset session') {
+                this.clearChat();
+                return;
+            }
             this.chatMessages.push({ role: 'user', content: text });
             this.chatInput = '';
             this.chatBusy = true;
@@ -862,9 +869,21 @@ window.propertyAgentApp = function propertyAgentApp() {
                     filters: ctx.filters,
                     topResults: ctx.topResults
                 });
-                this.chatMessages.push({ role: 'assistant', content: data.reply, tools: data.toolTrace || [] });
+                const hasClear = (data.actions || []).some(a => a.type === 'clear_session');
+                if (hasClear) {
+                    this.clearChat();
+                    this.chatMessages.push({
+                        role: 'assistant',
+                        content: data.reply || 'AI session cleared. How can I help you afresh?',
+                        tools: data.toolTrace || []
+                    });
+                } else {
+                    this.chatMessages.push({ role: 'assistant', content: data.reply, tools: data.toolTrace || [] });
+                }
                 for (const action of (data.actions || [])) {
-                    await this.applyChatAction(action);
+                    if (action.type !== 'clear_session') {
+                        await this.applyChatAction(action);
+                    }
                 }
             } catch (e) {
                 this.chatMessages.push({ role: 'assistant', content: 'Sorry, the assistant request failed: ' + e.message });
@@ -913,6 +932,8 @@ window.propertyAgentApp = function propertyAgentApp() {
                 this.scrapeBannerDismissed = false;
                 await this.loadScrapeStatus(true);
                 this.startFallbackPollingIfNeeded();
+            } else if (action.type === 'clear_session') {
+                this.clearChat();
             }
         },
 

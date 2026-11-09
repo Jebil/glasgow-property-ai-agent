@@ -1440,7 +1440,10 @@
             <div>💬 Property AI Assistant
                 <small>Sees your filters &amp; top results • can search listings, change filters, browse the web</small>
             </div>
-            <div><button @click="clearChat()" title="Clear conversation">Clear</button><button @click="toggleChat()" title="Close">✕</button></div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+                <button @click="clearChat()" title="Clear conversation session" style="background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.3); border-radius: 4px; padding: 2px 7px; font-size: 11px; font-weight: 500;">🗑️ Clear Session</button>
+                <button @click="toggleChat()" title="Close" style="font-size: 14px; margin-left: 2px;">✕</button>
+            </div>
         </div>
         <div class="ai-chat-body" x-ref="chatBody">
             <template x-if="chatMessages.length === 0">
