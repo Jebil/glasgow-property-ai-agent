@@ -1,4 +1,8 @@
-package com.glasgow.propertyagent.service;
+package com.glasgow.propertyagent.service.ai;
+
+import com.glasgow.propertyagent.service.app.StationCommuteService;
+import com.glasgow.propertyagent.service.scraping.PropertyMediaService;
+import com.glasgow.propertyagent.service.app.PropertyScoringEngine;
 
 import com.glasgow.propertyagent.entity.IndexedPropertyEntity;
 import com.glasgow.propertyagent.model.BuyerWorkflowState;

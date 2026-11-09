@@ -1,8 +1,9 @@
 package com.glasgow.propertyagent;
 
-import com.glasgow.propertyagent.service.PropertyDailyFetchScheduler;
-import com.glasgow.propertyagent.service.RightmoveScraperService;
-import com.glasgow.propertyagent.service.ScrapeJobStateTracker;
+import com.glasgow.propertyagent.service.scraping.ScrapeJobStateTracker;
+import com.glasgow.propertyagent.service.schedule.PropertyDailyFetchScheduler;
+import com.glasgow.propertyagent.service.scraping.RightmoveScraperService;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

@@ -1,4 +1,8 @@
-package com.glasgow.propertyagent.service;
+package com.glasgow.propertyagent.service.ai;
+
+import com.glasgow.propertyagent.service.scraping.RightmoveScraperService;
+import com.glasgow.propertyagent.service.app.ReadOnlySqlExecutor;
+import com.glasgow.propertyagent.service.app.BuyerWorkflowService;
 
 import com.glasgow.propertyagent.model.BuyerWorkflowState;
 import org.slf4j.Logger;

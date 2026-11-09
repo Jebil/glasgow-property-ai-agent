@@ -1,15 +1,16 @@
 package com.glasgow.propertyagent;
 
+import com.glasgow.propertyagent.service.app.StationCommuteService;
+import com.glasgow.propertyagent.service.scraping.RightmoveScraperService;
+import com.glasgow.propertyagent.service.app.OsmOverpassTransitClient;
+import com.glasgow.propertyagent.service.ai.OllamaAgentService;
+
 import tools.jackson.databind.ObjectMapper;
 import com.glasgow.propertyagent.entity.IndexedPropertyEntity;
 import com.glasgow.propertyagent.model.ExtractedPropertyMetadata;
 import com.glasgow.propertyagent.model.RankedPropertyResponse;
 import com.glasgow.propertyagent.model.SearchFilterRequest;
 import com.glasgow.propertyagent.model.StationProfile;
-import com.glasgow.propertyagent.service.OllamaAgentService;
-import com.glasgow.propertyagent.service.OsmOverpassTransitClient;
-import com.glasgow.propertyagent.service.RightmoveScraperService;
-import com.glasgow.propertyagent.service.StationCommuteService;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

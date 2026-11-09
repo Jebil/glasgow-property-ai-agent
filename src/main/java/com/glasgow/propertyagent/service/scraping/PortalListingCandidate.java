@@ -1,4 +1,6 @@
-package com.glasgow.propertyagent.service;
+package com.glasgow.propertyagent.service.scraping;
+
+import com.glasgow.propertyagent.service.app.PropertyIngestionPipeline;
 
 import java.util.HashSet;
 import java.util.List;

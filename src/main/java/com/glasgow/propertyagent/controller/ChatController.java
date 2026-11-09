@@ -1,6 +1,7 @@
 package com.glasgow.propertyagent.controller;
 
-import com.glasgow.propertyagent.service.ChatAssistantService;
+import com.glasgow.propertyagent.service.ai.ChatAssistantService;
+
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;

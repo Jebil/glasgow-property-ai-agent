@@ -1,4 +1,10 @@
-package com.glasgow.propertyagent.service;
+package com.glasgow.propertyagent.service.scraping;
+
+import com.glasgow.propertyagent.service.app.StationCommuteService;
+import com.glasgow.propertyagent.service.ai.PropertyEmbeddingService;
+import com.glasgow.propertyagent.service.app.PropertyIngestionPipeline;
+import com.glasgow.propertyagent.service.app.PropertyMetadataCache;
+import com.glasgow.propertyagent.service.ai.OllamaAgentService;
 
 import com.glasgow.propertyagent.model.ExtractedPropertyMetadata;
 import com.glasgow.propertyagent.repository.IndexedPropertyRepository;

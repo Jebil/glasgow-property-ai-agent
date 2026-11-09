@@ -1,4 +1,4 @@
-package com.glasgow.propertyagent.service;
+package com.glasgow.propertyagent.service.ai;
 
 import com.glasgow.propertyagent.model.ExtractedPropertyMetadata;
 import org.springframework.stereotype.Component;

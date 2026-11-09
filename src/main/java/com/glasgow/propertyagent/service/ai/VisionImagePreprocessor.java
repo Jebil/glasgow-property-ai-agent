@@ -1,4 +1,4 @@
-package com.glasgow.propertyagent.service;
+package com.glasgow.propertyagent.service.ai;
 
 import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;

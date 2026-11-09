@@ -1,4 +1,6 @@
-package com.glasgow.propertyagent.service;
+package com.glasgow.propertyagent.service.scraping;
+
+import com.glasgow.propertyagent.service.app.StationCommuteService;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;

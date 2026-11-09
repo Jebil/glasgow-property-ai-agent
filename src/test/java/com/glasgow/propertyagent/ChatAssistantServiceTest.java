@@ -1,13 +1,14 @@
 package com.glasgow.propertyagent;
 
+import com.glasgow.propertyagent.service.scraping.ScrapeJobStateTracker;
+import com.glasgow.propertyagent.service.scraping.RightmoveScraperService;
+import com.glasgow.propertyagent.service.ai.WebSearchClient;
+import com.glasgow.propertyagent.service.ai.ChatAssistantService;
+import com.glasgow.propertyagent.service.app.ReadOnlySqlExecutor;
+import com.glasgow.propertyagent.service.ai.OllamaApiClient;
+import com.glasgow.propertyagent.service.app.BuyerWorkflowService;
+
 import com.glasgow.propertyagent.model.BuyerWorkflowState;
-import com.glasgow.propertyagent.service.BuyerWorkflowService;
-import com.glasgow.propertyagent.service.ChatAssistantService;
-import com.glasgow.propertyagent.service.OllamaApiClient;
-import com.glasgow.propertyagent.service.ReadOnlySqlExecutor;
-import com.glasgow.propertyagent.service.RightmoveScraperService;
-import com.glasgow.propertyagent.service.ScrapeJobStateTracker;
-import com.glasgow.propertyagent.service.WebSearchClient;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import tools.jackson.databind.JsonNode;

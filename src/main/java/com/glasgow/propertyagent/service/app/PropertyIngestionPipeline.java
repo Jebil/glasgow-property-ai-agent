@@ -1,4 +1,12 @@
-package com.glasgow.propertyagent.service;
+package com.glasgow.propertyagent.service.app;
+
+import com.glasgow.propertyagent.service.scraping.ScrapeJobStateTracker;
+import com.glasgow.propertyagent.service.scraping.PortalListingCandidate;
+import com.glasgow.propertyagent.service.ai.PropertyEmbeddingService;
+import com.glasgow.propertyagent.service.scraping.PropertyMediaService;
+import com.glasgow.propertyagent.service.scraping.RightmovePortalClient;
+import com.glasgow.propertyagent.service.scraping.OnTheMarketPortalClient;
+import com.glasgow.propertyagent.service.ai.OllamaAgentService;
 
 import com.glasgow.propertyagent.entity.IndexedPropertyEntity;
 import com.glasgow.propertyagent.model.ExtractedPropertyMetadata;

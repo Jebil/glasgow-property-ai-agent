@@ -1,4 +1,4 @@
-package com.glasgow.propertyagent.service;
+package com.glasgow.propertyagent.service.app;
 
 import com.glasgow.propertyagent.entity.IndexedPropertyEntity;
 import com.glasgow.propertyagent.model.BuyerWorkflowState;

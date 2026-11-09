@@ -1,4 +1,4 @@
-package com.glasgow.propertyagent.service;
+package com.glasgow.propertyagent.service.scraping;
 
 import com.glasgow.propertyagent.repository.IndexedPropertyRepository;
 import org.slf4j.Logger;

@@ -1,4 +1,6 @@
-package com.glasgow.propertyagent.service;
+package com.glasgow.propertyagent.service.app;
+
+import com.glasgow.propertyagent.service.ai.OllamaApiClient;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

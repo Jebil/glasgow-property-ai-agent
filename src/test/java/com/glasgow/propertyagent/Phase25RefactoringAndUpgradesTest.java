@@ -1,18 +1,19 @@
 package com.glasgow.propertyagent;
 
+import com.glasgow.propertyagent.service.app.StationCommuteService;
+import com.glasgow.propertyagent.service.scraping.ScrapeJobStateTracker;
+import com.glasgow.propertyagent.service.scraping.PortalListingCandidate;
+import com.glasgow.propertyagent.service.scraping.RightmoveScraperService;
+import com.glasgow.propertyagent.service.app.PropertyMetadataCache;
+import com.glasgow.propertyagent.service.app.OsmOverpassTransitClient;
+import com.glasgow.propertyagent.service.scraping.RightmovePortalClient;
+import com.glasgow.propertyagent.service.scraping.OnTheMarketPortalClient;
+import com.glasgow.propertyagent.service.ai.VisionImagePreprocessor;
+
 import com.glasgow.propertyagent.controller.PropertyAgentController;
 import com.glasgow.propertyagent.entity.IndexedPropertyEntity;
 import com.glasgow.propertyagent.model.ExtractedPropertyMetadata;
 import com.glasgow.propertyagent.model.SearchFilterRequest;
-import com.glasgow.propertyagent.service.OnTheMarketPortalClient;
-import com.glasgow.propertyagent.service.OsmOverpassTransitClient;
-import com.glasgow.propertyagent.service.PortalListingCandidate;
-import com.glasgow.propertyagent.service.PropertyMetadataCache;
-import com.glasgow.propertyagent.service.RightmovePortalClient;
-import com.glasgow.propertyagent.service.RightmoveScraperService;
-import com.glasgow.propertyagent.service.ScrapeJobStateTracker;
-import com.glasgow.propertyagent.service.StationCommuteService;
-import com.glasgow.propertyagent.service.VisionImagePreprocessor;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;

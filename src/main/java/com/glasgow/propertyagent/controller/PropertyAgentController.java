@@ -1,5 +1,15 @@
 package com.glasgow.propertyagent.controller;
 
+import com.glasgow.propertyagent.service.app.StationCommuteService;
+import com.glasgow.propertyagent.service.ai.PropertyEmbeddingService;
+import com.glasgow.propertyagent.service.schedule.PropertyDailyFetchScheduler;
+import com.glasgow.propertyagent.service.scraping.RightmoveScraperService;
+import com.glasgow.propertyagent.service.app.HomeReportAnalyzerService;
+import com.glasgow.propertyagent.service.app.GlasgowSchoolAndAreaService;
+import com.glasgow.propertyagent.service.app.PropertyMetadataCache;
+import com.glasgow.propertyagent.service.app.BuyerWorkflowService;
+import com.glasgow.propertyagent.service.ai.OllamaAgentService;
+
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.glasgow.propertyagent.entity.IndexedPropertyEntity;
@@ -9,15 +19,6 @@ import com.glasgow.propertyagent.model.RankedPropertyResponse;
 import com.glasgow.propertyagent.model.SearchFilterRequest;
 import com.glasgow.propertyagent.model.StationProfile;
 import com.glasgow.propertyagent.repository.IndexedPropertyRepository;
-import com.glasgow.propertyagent.service.BuyerWorkflowService;
-import com.glasgow.propertyagent.service.GlasgowSchoolAndAreaService;
-import com.glasgow.propertyagent.service.HomeReportAnalyzerService;
-import com.glasgow.propertyagent.service.OllamaAgentService;
-import com.glasgow.propertyagent.service.PropertyDailyFetchScheduler;
-import com.glasgow.propertyagent.service.PropertyEmbeddingService;
-import com.glasgow.propertyagent.service.PropertyMetadataCache;
-import com.glasgow.propertyagent.service.RightmoveScraperService;
-import com.glasgow.propertyagent.service.StationCommuteService;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

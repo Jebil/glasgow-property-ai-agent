@@ -1,4 +1,6 @@
-package com.glasgow.propertyagent.service;
+package com.glasgow.propertyagent.service.schedule;
+
+import com.glasgow.propertyagent.service.scraping.RightmoveScraperService;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
