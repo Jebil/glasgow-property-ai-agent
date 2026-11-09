@@ -41,8 +41,8 @@ public class PropertyDailyFetchScheduler {
     @Value("${property-agent.schedule.min-bedrooms:0}")
     private int minBedrooms = 0;
 
-    @Value("${property-agent.schedule.property-types:}")
-    private List<String> propertyTypes;
+    @Value("${property-agent.schedule.property-types:Detached,Semi-Detached,Bungalow}")
+    private List<String> propertyTypes = List.of("Detached", "Semi-Detached", "Bungalow");
 
     private volatile Instant lastRunTime = null;
     private volatile String lastStatus = "Never executed";

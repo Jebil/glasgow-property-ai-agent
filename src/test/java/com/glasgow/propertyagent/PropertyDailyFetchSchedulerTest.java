@@ -82,7 +82,7 @@ class PropertyDailyFetchSchedulerTest {
         assertEquals("Glasgow Central", fakeScraper.lastCenter);
         assertEquals(15.0, fakeScraper.lastRadius);
         assertEquals("all", fakeScraper.lastProvider);
-        assertNull(fakeScraper.lastPropertyTypes);
+        assertEquals(List.of("Detached", "Semi-Detached", "Bungalow"), fakeScraper.lastPropertyTypes);
         assertEquals(0, fakeScraper.lastMaxPrice);
         assertEquals(0, fakeScraper.lastMinBedrooms);
         assertNotNull(scheduler.getLastRunTime());
@@ -110,6 +110,7 @@ class PropertyDailyFetchSchedulerTest {
         assertEquals("Glasgow Central", fakeScraper.lastCenter);
         assertEquals(15.0, fakeScraper.lastRadius);
         assertEquals("all", fakeScraper.lastProvider);
+        assertEquals(List.of("Detached", "Semi-Detached", "Bungalow"), fakeScraper.lastPropertyTypes);
         assertNotNull(scheduler.getLastRunTime());
         assertTrue(scheduler.getLastStatus().contains("Job started (MANUAL_TRIGGER)"));
     }

@@ -87,7 +87,7 @@ window.PropertyAgentState = (function () {
             portalProvider: 'rightmove',
             centerLocation: 'Glasgow Central',
             radiusMiles: 15.0,
-            propertyTypes: ALL_PROPERTY_TYPES.slice(),
+            propertyTypes: ['Detached', 'Semi-Detached', 'Bungalow'],
             transportModes: ['Train', 'Subway', 'Bus'],
             minServicesPerHour: 2,
             maxPrice: 500000,
