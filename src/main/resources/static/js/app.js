@@ -53,8 +53,10 @@ window.propertyAgentApp = function propertyAgentApp() {
         chatMessages: [],
         chatHints: [
             'Summarise my current filters',
-            'Show detached homes under my max price with a driveway',
-            'What are current mortgage rates and ADS in Scotland?'
+            'Why is property #1 marked with off-street parking?',
+            'What is the average price of detached homes in Bearsden?',
+            'Show recent error logs',
+            'Fetch latest listings from Rightmove for Glasgow Central'
         ],
 
         // Phase 3 UI & Domain State (FEAT-01 .. FEAT-07)
@@ -862,7 +864,7 @@ window.propertyAgentApp = function propertyAgentApp() {
                 });
                 this.chatMessages.push({ role: 'assistant', content: data.reply, tools: data.toolTrace || [] });
                 for (const action of (data.actions || [])) {
-                    this.applyChatAction(action);
+                    await this.applyChatAction(action);
                 }
             } catch (e) {
                 this.chatMessages.push({ role: 'assistant', content: 'Sorry, the assistant request failed: ' + e.message });
@@ -872,24 +874,46 @@ window.propertyAgentApp = function propertyAgentApp() {
             }
         },
 
-        applyChatAction(action) {
-            if (!action || action.type !== 'apply_filters') return;
-            const allowed = ['maxPrice', 'minBedrooms', 'radiusMiles', 'centerLocation', 'maxDoorToCentralCommuteMins',
-                'minServicesPerHour', 'requireFreeStationParking', 'requireStepFreeCategoryA', 'propertyTypes', 'transportModes'];
-            for (const key of allowed) {
-                if (action.filters && action.filters[key] !== undefined) {
-                    this.filters[key] = action.filters[key];
+        async applyChatAction(action) {
+            if (!action || !action.type) return;
+            if (action.type === 'apply_filters') {
+                const allowed = ['maxPrice', 'minBedrooms', 'radiusMiles', 'centerLocation', 'maxDoorToCentralCommuteMins',
+                    'minServicesPerHour', 'requireFreeStationParking', 'requireStepFreeCategoryA', 'propertyTypes', 'transportModes'];
+                for (const key of allowed) {
+                    if (action.filters && action.filters[key] !== undefined) {
+                        this.filters[key] = action.filters[key];
+                    }
                 }
+                if (action.clearCriteria) {
+                    this.filters.dynamicCriteria = [];
+                }
+                for (const c of (action.addCriteria || [])) {
+                    const exists = this.filters.dynamicCriteria.some(x => x.rule.toLowerCase() === c.rule.toLowerCase());
+                    if (!exists) this.filters.dynamicCriteria.unshift({ rule: c.rule, priority: c.priority || 'HIGH' });
+                }
+                this.filters.bypassHardFilters = false;
+                await this.runRanker();
+            } else if (action.type === 'open_property') {
+                const id = action.listingId;
+                let prop = (this.results || []).find(p => String(p.listingId) === String(id));
+                if (!prop) {
+                    try {
+                        prop = await Api.getPropertyDetail(id);
+                    } catch (e) {
+                        console.warn('Could not load property for modal', e);
+                    }
+                }
+                if (prop) {
+                    await this.openPropertyModal(prop);
+                }
+            } else if (action.type === 'refresh_workflow') {
+                await this.loadWorkflowSummary();
+                await this.runRanker();
+            } else if (action.type === 'fetch_started') {
+                this.scrapeBannerDismissed = false;
+                await this.loadScrapeStatus(true);
+                this.startFallbackPollingIfNeeded();
             }
-            if (action.clearCriteria) {
-                this.filters.dynamicCriteria = [];
-            }
-            for (const c of (action.addCriteria || [])) {
-                const exists = this.filters.dynamicCriteria.some(x => x.rule.toLowerCase() === c.rule.toLowerCase());
-                if (!exists) this.filters.dynamicCriteria.unshift({ rule: c.rule, priority: c.priority || 'HIGH' });
-            }
-            this.filters.bypassHardFilters = false;
-            this.runRanker();
         },
 
         resetDefaultCriteria() {

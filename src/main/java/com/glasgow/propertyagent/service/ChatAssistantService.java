@@ -1,5 +1,6 @@
 package com.glasgow.propertyagent.service;
 
+import com.glasgow.propertyagent.model.BuyerWorkflowState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -10,6 +11,11 @@ import org.springframework.stereotype.Service;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
+import java.io.File;
+import java.io.RandomAccessFile;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -20,15 +26,8 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * AI chat assistant for custom property search and general buyer questions.
- *
- * Gemma (via Ollama) cannot access the internet or the database on its own. Instead the model is given
- * tools through Ollama's native tool-calling API and this service executes them on its behalf:
- *  - search_properties / get_property : LOCAL indexed PostgreSQL data only
- *  - apply_filters                    : queues a UI filter change returned to the browser as an action
- *  - web_search / fetch_webpage       : optional internet access (interest rates, ADS/LBTT, etc.)
- * The browser also sends the currently applied filters + top ranked results with every message so the
- * assistant always sees what the user sees.
+ * AI chat assistant for custom property search, dynamic database querying,
+ * system log checking, buyer workflow automation, and background scrape control.
  */
 @Service
 public class ChatAssistantService {
@@ -40,6 +39,7 @@ public class ChatAssistantService {
     static final Set<String> VALID_PROPERTY_TYPES = Set.of("Detached", "Semi-Detached", "Terraced", "Bungalow", "Flat");
     static final Set<String> VALID_TRANSPORT_MODES = Set.of("Train", "Subway", "Bus");
     static final Set<String> VALID_PRIORITIES = Set.of("MUST_HAVE", "HIGH", "MEDIUM", "NICE_TO_HAVE");
+    static final Set<String> VALID_VIEWING_STATUSES = Set.of("NONE", "BOOKED", "VISITED", "OFFER_PLACED");
 
     public record ChatMessage(String role, String content) {}
 
@@ -62,7 +62,20 @@ public class ChatAssistantService {
     private final PropertyEmbeddingService embeddingService;
     private final ReadOnlySqlExecutor sqlExecutor;
     private final WebSearchClient webClient;
+    private final RightmoveScraperService scraperService;
+    private final BuyerWorkflowService buyerWorkflowService;
     private final String chatModel;
+
+    public ChatAssistantService(
+            OllamaApiClient ollama,
+            ObjectMapper objectMapper,
+            JdbcTemplate jdbcTemplate,
+            PropertyEmbeddingService embeddingService,
+            ReadOnlySqlExecutor sqlExecutor,
+            WebSearchClient webClient,
+            String chatModel) {
+        this(ollama, objectMapper, jdbcTemplate, embeddingService, sqlExecutor, webClient, null, null, chatModel);
+    }
 
     @Autowired
     public ChatAssistantService(
@@ -72,6 +85,8 @@ public class ChatAssistantService {
             PropertyEmbeddingService embeddingService,
             ReadOnlySqlExecutor sqlExecutor,
             WebSearchClient webClient,
+            @Autowired(required = false) RightmoveScraperService scraperService,
+            @Autowired(required = false) BuyerWorkflowService buyerWorkflowService,
             @Value("${property-agent.ollama.chat-model:${property-agent.ollama.ranking-model:gemma4:e4b}}") String chatModel) {
         this.ollama = ollama;
         this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper();
@@ -79,6 +94,8 @@ public class ChatAssistantService {
         this.embeddingService = embeddingService;
         this.sqlExecutor = sqlExecutor;
         this.webClient = webClient;
+        this.scraperService = scraperService;
+        this.buyerWorkflowService = buyerWorkflowService;
         this.chatModel = chatModel;
     }
 
@@ -98,7 +115,7 @@ public class ChatAssistantService {
             convo.add(Map.of("role", role, "content", m.content()));
         }
         if (convo.size() == 1) {
-            return new ChatResponse("Ask me anything about the properties, your current filters, or buying in Scotland.",
+            return new ChatResponse("Ask me anything about the properties, your current filters, buying in Scotland, or managing scrapes & logs.",
                 actions, trace, chatModel);
         }
 
@@ -113,7 +130,7 @@ public class ChatAssistantService {
                     if (useTools && looksLikeToolsUnsupported(e)) {
                         log.warn("Model '{}' rejected tools; continuing as plain chat: {}", chatModel, e.getMessage());
                         useTools = false;
-                        notice = "(This model build does not support tool calling, so I can't search listings or the web right now.)\n\n";
+                        notice = "(This model build does not support tool calling, so I can't run app tools right now.)\n\n";
                         resp = ollama.postChatJson(buildOllamaBody(convo, false));
                     } else {
                         throw e;
@@ -178,16 +195,26 @@ public class ChatAssistantService {
         sb.append("""
             You are the AI assistant inside the 'Glasgow Property AI Agent', a local app that ranks houses for sale \
             around Greater Glasgow for a family buyer. Today is %s.
-            Rules:
-            - Property data comes ONLY from the local database via run_sql / search_properties / get_property. Never invent \
-            listings, prices or addresses. If a tool returns nothing, say so.
-            - To change what the user sees (price cap, bedrooms, property types, commute, criteria such as parking), call \
-            apply_filters. Only do it when the user asks for it or clearly agrees.
-            - For general or time-sensitive questions (mortgage interest rates, Scottish LBTT / Additional Dwelling \
-            Supplement (ADS), Home Report rules, schools, area info) use web_search%s, then summarise and cite the source \
-            URL. Do not guess current rates from memory.
-            - Be concise (a short paragraph or a few bullets). Prices in GBP. Mention listing addresses so the user can find them.
-            """.formatted(LocalDate.now(), webClient != null && webClient.isEnabled() ? " (and fetch_webpage for details)" : " (currently disabled — say you cannot browse)"));
+            
+            RULES & CAPABILITIES:
+            1. Property data comes ONLY from the local database via run_sql / search_properties / get_property / get_property_evidence. Never invent listings, prices, or addresses.
+            2. When the user asks WHY or HOW a feature was marked (e.g. "how did you mark it as offstreet parking when property description doesn't say that", "where is the downstairs WC", "how do you know the garden is south facing"):
+               - Call get_property_evidence for that listing_id.
+               - Inspect metadataSource ('VISION_LLM', 'TEXT_LLM', or 'HEURISTIC'), metadataModel, extractedFeatures, and visionAndReasoningTranscript.
+               - Explain clearly whether the Vision LLM (gemma) analyzed the listing photos and floorplan images directly, whether it was identified via floorplan layout or heuristic regex patterns, or whether it was found in the portal's key features.
+            3. Full Application Access:
+               - To launch a portal scrape for newly listed homes, call trigger_fetch.
+               - To check running scrape progress, call get_job_status. To cancel it, call cancel_job.
+               - To check recent system logs or error traces, call get_logs.
+               - To shortlist, hide, add private buyer notes, or record viewing status, call update_buyer_workflow.
+               - To pop open a property's detail/floorplan modal in the user's browser, call open_property_in_ui.
+               - To change search criteria or filter cutoffs in the UI, call apply_filters.
+            4. For external facts (mortgage interest rates, Scottish LBTT/ADS tax rules, current news) call web_search%s, then cite the source URL.
+            5. Be concise (a short paragraph or bullet points). Format prices in GBP (£).
+            """.formatted(
+                LocalDate.now(),
+                webClient != null && webClient.isEnabled() ? " (and fetch_webpage for details)" : " (currently disabled)"
+            ));
 
         if (sqlExecutor != null && sqlExecutor.isAvailable()) {
             sb.append("""
@@ -240,6 +267,19 @@ public class ChatAssistantService {
             Map.of("listing_id", prop("string", "Listing id from search_properties")),
             List.of("listing_id")));
 
+        tools.add(tool("get_property_evidence",
+            "Retrieve the full AI vision transcript, visual notes on each photo and floorplan, heuristic reasoning, and verification badge for a property. "
+                + "Use this when the user asks WHY or HOW a feature was marked (e.g. 'how did you mark it as offstreet parking when property description doesn't say that', 'where is the downstairs WC', 'why is it south facing').",
+            Map.of("listing_id", prop("string", "Listing ID from search_properties or get_property")),
+            List.of("listing_id")));
+
+        tools.add(tool("get_logs",
+            "Read recent application log lines (from ./logs/property-agent.log). Useful to check errors, scrape events, transit lookups, or background worker activity.",
+            Map.of(
+                "lines", prop("integer", "Number of lines to return (default 80, max 250)"),
+                "filter", prop("string", "Case-insensitive substring filter, e.g. 'error', 'scrape', 'ollama', 'vision', 'parking'")
+            ), List.of()));
+
         Map<String, Object> filterProps = new LinkedHashMap<>();
         filterProps.put("maxPrice", prop("integer", "Max price GBP"));
         filterProps.put("minBedrooms", prop("integer", "Minimum bedrooms"));
@@ -274,6 +314,47 @@ public class ChatAssistantService {
                 List.of("sql")));
         }
 
+        if (scraperService != null) {
+            tools.add(tool("trigger_fetch",
+                "Trigger a background scrape/fetch for new property listings from Rightmove, OnTheMarket, or both portals. Results are saved into PostgreSQL.",
+                Map.of(
+                    "center_location", prop("string", "Target center, e.g. 'Glasgow Central' (default: 'Glasgow Central')"),
+                    "radius_miles", prop("number", "Search radius in miles (default: 15.0)"),
+                    "portal_provider", prop("string", "'all', 'rightmove', or 'onthemarket' (default: 'all')"),
+                    "property_types", Map.of("type", "array", "items", Map.of("type", "string"), "description", "List of types (Detached, Semi-Detached, Bungalow)"),
+                    "max_price", prop("integer", "Max price in GBP (0 = no cap)"),
+                    "min_bedrooms", prop("integer", "Minimum bedrooms (0 = any)")
+                ), List.of()));
+
+            tools.add(tool("get_job_status",
+                "Check the status of the currently running or last completed background scrape/indexing job.",
+                Map.of(), List.of()));
+
+            tools.add(tool("cancel_job",
+                "Cancel the currently running background scrape job.",
+                Map.of(), List.of()));
+        }
+
+        if (buyerWorkflowService != null) {
+            tools.add(tool("update_buyer_workflow",
+                "Update buyer state for a property: shortlist, hide, set viewing status ('NONE', 'BOOKED', 'VISITED', 'OFFER_PLACED'), save private notes, or update home report valuation / floor area / council tax band.",
+                Map.of(
+                    "listing_id", prop("string", "Target property listing_id (required)"),
+                    "shortlisted", prop("boolean", "True to shortlist, false to remove from shortlist"),
+                    "hidden", prop("boolean", "True to hide listing from search results"),
+                    "viewing_status", prop("string", "Viewing status: 'NONE', 'BOOKED', 'VISITED', or 'OFFER_PLACED'"),
+                    "notes", prop("string", "Private buyer notes on this listing"),
+                    "home_report_valuation_gbp", prop("integer", "Home Report valuation in GBP"),
+                    "floor_area_sqm", prop("number", "Floor area in square meters"),
+                    "council_tax_band", prop("string", "Council tax band (A-H)")
+                ), List.of("listing_id")));
+        }
+
+        tools.add(tool("open_property_in_ui",
+            "Instruct the user's web browser to immediately open the property detail & floorplan modal for a specific listing.",
+            Map.of("listing_id", prop("string", "Listing ID")),
+            List.of("listing_id")));
+
         if (webClient != null && webClient.isEnabled()) {
             tools.add(tool("web_search",
                 "Search the internet (UK results) for current facts such as interest rates, LBTT/ADS rules, schools, area info.",
@@ -290,8 +371,15 @@ public class ChatAssistantService {
             return switch (name == null ? "" : name) {
                 case "search_properties" -> toolSearchProperties(args);
                 case "get_property" -> toolGetProperty(args);
+                case "get_property_evidence" -> toolGetPropertyEvidence(args);
+                case "get_logs" -> toolGetLogs(args);
                 case "apply_filters" -> toolApplyFilters(args, actions);
                 case "run_sql" -> toolRunSql(args);
+                case "trigger_fetch" -> toolTriggerFetch(args, actions);
+                case "get_job_status" -> toolGetJobStatus(args);
+                case "cancel_job" -> toolCancelJob(args);
+                case "update_buyer_workflow" -> toolUpdateBuyerWorkflow(args, actions);
+                case "open_property_in_ui" -> toolOpenPropertyInUi(args, actions);
                 case "web_search" -> toolWebSearch(args);
                 case "fetch_webpage" -> toolFetchWebpage(args);
                 default -> "{\"error\":\"Unknown tool: " + name + "\"}";
@@ -410,6 +498,160 @@ public class ChatAssistantService {
         return rows.isEmpty() ? "{\"error\":\"No property with that listing_id\"}" : safeJson(rows.get(0));
     }
 
+    private String toolGetPropertyEvidence(Map<String, Object> args) {
+        if (jdbcClient == null) return "{\"error\":\"Database unavailable\"}";
+        String id = str(args.get("listing_id"));
+        if (id.isBlank()) return "{\"error\":\"listing_id is required\"}";
+        List<Map<String, Object>> rows = jdbcClient.sql("""
+            SELECT listing_id, title, address, property_type, price_gbp,
+                   metadata_source, metadata_model, analyzed_at,
+                   metadata_json, llm_response_log, raw_description
+            FROM indexed_properties WHERE listing_id = ?
+            """).param(id).query((rs, i) -> {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("listingId", rs.getString("listing_id"));
+                m.put("title", rs.getString("title"));
+                m.put("address", rs.getString("address"));
+                m.put("propertyType", rs.getString("property_type"));
+                m.put("priceGbp", rs.getInt("price_gbp"));
+                m.put("metadataSource", rs.getString("metadata_source")); // "VISION_LLM", "TEXT_LLM", "HEURISTIC"
+                m.put("metadataModel", rs.getString("metadata_model"));
+                m.put("analyzedAt", rs.getString("analyzed_at"));
+                String metaRaw = rs.getString("metadata_json");
+                try {
+                    if (metaRaw != null && !metaRaw.isBlank()) {
+                        m.put("extractedFeatures", objectMapper.readValue(metaRaw, Map.class));
+                    }
+                } catch (Exception e) {
+                    m.put("extractedFeaturesRaw", metaRaw);
+                }
+                String llmLog = rs.getString("llm_response_log");
+                m.put("visionAndReasoningTranscript", truncate(llmLog != null && !llmLog.isBlank() ? llmLog : "No LLM transcript recorded (heuristic extraction used).", 4000));
+                m.put("descriptionExcerpt", truncate(String.valueOf(rs.getString("raw_description")), 1000));
+                return m;
+            }).list();
+        return rows.isEmpty() ? "{\"error\":\"No property with listing_id " + id + "\"}" : safeJson(rows.get(0));
+    }
+
+    private String toolGetLogs(Map<String, Object> args) {
+        int lines = Math.min(250, Math.max(10, intOr(args.get("lines"), 80)));
+        String filter = str(args.get("filter"));
+        Path path = Path.of("logs", "property-agent.log");
+        if (!Files.exists(path)) {
+            return "{\"status\":\"No log file found at ./logs/property-agent.log yet.\"}";
+        }
+        try {
+            File file = path.toFile();
+            long fileLength = file.length();
+            if (fileLength == 0) return "{\"lines\":[]}";
+            long seekStart = Math.max(0, fileLength - 262144L); // last 256KB
+            int readLen = (int) (fileLength - seekStart);
+            byte[] buffer = new byte[readLen];
+            try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
+                raf.seek(seekStart);
+                raf.readFully(buffer);
+            }
+            String content = new String(buffer, StandardCharsets.UTF_8);
+            String[] rawLines = content.split("\r?\n");
+            List<String> matched = new ArrayList<>();
+            String fLower = filter.toLowerCase(Locale.ROOT);
+            for (String line : rawLines) {
+                if (filter.isBlank() || line.toLowerCase(Locale.ROOT).contains(fLower)) {
+                    matched.add(line);
+                }
+            }
+            int start = Math.max(0, matched.size() - lines);
+            List<String> tail = matched.subList(start, matched.size());
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("lineCount", tail.size());
+            out.put("lines", tail);
+            if (!filter.isBlank()) out.put("filter", filter);
+            return safeJson(out);
+        } catch (Exception e) {
+            return "{\"error\":" + safeJson("Error reading log tail: " + e.getMessage()) + "}";
+        }
+    }
+
+    private String toolTriggerFetch(Map<String, Object> args, List<Map<String, Object>> actions) {
+        if (scraperService == null) return "{\"error\":\"Scraper service unavailable in this environment\"}";
+        String center = str(args.get("center_location"));
+        if (center.isBlank()) center = "Glasgow Central";
+        double radius = doubleOr(args.get("radius_miles"), 15.0);
+        String provider = str(args.get("portal_provider"));
+        if (provider.isBlank()) provider = str(args.get("provider"));
+        if (provider.isBlank()) provider = "all";
+        List<String> types = stringList(args.get("property_types"));
+        int maxPrice = intOr(args.get("max_price"), 0);
+        int minBeds = intOr(args.get("min_bedrooms"), 0);
+
+        RightmoveScraperService.ScrapeJobStatus status = scraperService.startBackgroundScrape(
+            center, radius, provider, types.isEmpty() ? null : types, maxPrice, minBeds
+        );
+        Map<String, Object> action = new LinkedHashMap<>();
+        action.put("type", "fetch_started");
+        action.put("centerLocation", center);
+        action.put("radiusMiles", radius);
+        actions.add(action);
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("accepted", status.accepted());
+        out.put("statusMessage", status.statusMessage());
+        out.put("jobType", status.jobType());
+        out.put("targetCenter", status.targetCenter());
+        out.put("targetRadiusMiles", status.targetRadiusMiles());
+        return safeJson(out);
+    }
+
+    private String toolGetJobStatus(Map<String, Object> args) {
+        if (scraperService == null) return "{\"error\":\"Scraper service unavailable in this environment\"}";
+        return safeJson(scraperService.getScrapeJobStatus());
+    }
+
+    private String toolCancelJob(Map<String, Object> args) {
+        if (scraperService == null) return "{\"error\":\"Scraper service unavailable in this environment\"}";
+        scraperService.cancelJob();
+        return "{\"status\":\"Cancellation requested for active background scrape job.\"}";
+    }
+
+    private String toolUpdateBuyerWorkflow(Map<String, Object> args, List<Map<String, Object>> actions) {
+        if (buyerWorkflowService == null) return "{\"error\":\"Buyer workflow service unavailable in this environment\"}";
+        String listingId = str(args.get("listing_id"));
+        if (listingId.isBlank()) return "{\"error\":\"listing_id is required\"}";
+        Boolean shortlisted = args.get("shortlisted") instanceof Boolean b ? b : null;
+        Boolean hidden = args.get("hidden") instanceof Boolean b ? b : null;
+        String rawVs = str(args.get("viewing_status")).toUpperCase(Locale.ROOT);
+        String viewingStatus = VALID_VIEWING_STATUSES.contains(rawVs) ? rawVs : null;
+        String notes = str(args.get("notes"));
+        if (notes.isBlank()) notes = str(args.get("buyer_notes"));
+        Integer hrValuation = args.get("home_report_valuation_gbp") instanceof Number n ? n.intValue() : null;
+        Double floorArea = args.get("floor_area_sqm") instanceof Number n ? n.doubleValue() : null;
+        String councilTax = str(args.get("council_tax_band"));
+
+        BuyerWorkflowService.WorkflowUpdateRequest req = new BuyerWorkflowService.WorkflowUpdateRequest(
+            shortlisted,
+            hidden,
+            viewingStatus,
+            notes.isBlank() ? null : notes,
+            hrValuation,
+            floorArea,
+            councilTax.isBlank() ? null : councilTax
+        );
+        BuyerWorkflowState updated = buyerWorkflowService.updateWorkflow(listingId, req);
+        Map<String, Object> action = new LinkedHashMap<>();
+        action.put("type", "refresh_workflow");
+        action.put("listingId", listingId);
+        actions.add(action);
+
+        return safeJson(Map.of("status", "updated", "listingId", listingId, "workflow", updated));
+    }
+
+    private String toolOpenPropertyInUi(Map<String, Object> args, List<Map<String, Object>> actions) {
+        String listingId = str(args.get("listing_id"));
+        if (listingId.isBlank()) return "{\"error\":\"listing_id is required\"}";
+        actions.add(Map.of("type", "open_property", "listingId", listingId));
+        return "{\"status\":\"queued\",\"note\":\"UI will open modal for listing " + listingId + "\"}";
+    }
+
     private String toolApplyFilters(Map<String, Object> args, List<Map<String, Object>> actions) {
         Map<String, Object> filters = new LinkedHashMap<>();
         putInt(filters, args, "maxPrice", 0, 10_000_000);
@@ -466,7 +708,6 @@ public class ChatAssistantService {
         } catch (IllegalArgumentException rejected) {
             return "{\"error\":" + safeJson("Query rejected: " + rejected.getMessage()) + "}";
         } catch (Exception e) {
-            // SQL errors (bad column, syntax, timeout) go back to the model so it can correct the query
             String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
             return "{\"error\":" + safeJson("SQL error: " + truncate(msg.replaceAll("\\s+", " "), 400)) + "}";
         }
@@ -520,6 +761,14 @@ public class ChatAssistantService {
         return def;
     }
 
+    static double doubleOr(Object v, double def) {
+        if (v instanceof Number n) return n.doubleValue();
+        if (v instanceof String s) {
+            try { return Double.parseDouble(s.replaceAll("[^0-9.-]", "")); } catch (NumberFormatException ignored) { }
+        }
+        return def;
+    }
+
     static String str(Object v) {
         return v == null ? "" : String.valueOf(v).trim();
     }
@@ -530,7 +779,6 @@ public class ChatAssistantService {
             for (Object o : list) {
                 String s = str(o);
                 if (s.isEmpty()) continue;
-                // normalise case so "detached" / "semi-detached" match the canonical names
                 for (String canon : VALID_PROPERTY_TYPES) if (canon.equalsIgnoreCase(s)) s = canon;
                 for (String canon : VALID_TRANSPORT_MODES) if (canon.equalsIgnoreCase(s)) s = canon;
                 out.add(s);
