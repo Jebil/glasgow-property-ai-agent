@@ -470,20 +470,34 @@ class ChatAssistantServiceTest {
         assertTrue(result.contains("private tarmac driveway for 2 cars"));
         assertTrue(result.contains("offStreetParking"));
 
+        // Index resolution test: '#1' or 'property 1' resolves automatically from topResults
+        List<Map<String, Object>> topList = List.of(Map.of("listingId", "RM-9901", "address", "14 Buchanan Gardens"));
+        String resHash1 = svc.executeTool("get_property_evidence", Map.of("listing_id", "#1"), new ArrayList<>(), topList);
+        assertTrue(resHash1.contains("VISION_LLM"));
+        String resProp1 = svc.executeTool("get_property_evidence", Map.of("listing_id", "property 1"), new ArrayList<>(), topList);
+        assertTrue(resProp1.contains("VISION_LLM"));
+        String resAddr = svc.executeTool("get_property_evidence", Map.of("listing_id", "Buchanan Gardens"), new ArrayList<>(), topList);
+        assertTrue(resAddr.contains("VISION_LLM"));
+
         // Missing listing_id error test
         String errMissing = svc.executeTool("get_property_evidence", Map.of(), new ArrayList<>());
         assertTrue(errMissing.contains("listing_id is required"));
 
-        // End-to-end conversation: User asks why it has offstreet parking when description doesn't say it
+        // End-to-end conversation: User asks why property #1 has offstreet parking when description doesn't say it
         fake.script.add("""
             {"message":{"role":"assistant","content":"","tool_calls":[
-              {"function":{"name":"get_property_evidence","arguments":{"listing_id":"RM-9901"}}}]}}
+              {"function":{"name":"get_property_evidence","arguments":{"listing_id":"#1"}}}]}}
             """);
         fake.script.add("""
             {"message":{"role":"assistant","content":"Although the property description doesn't mention parking, photo 4 was analyzed by the vision model and clearly shows a private tarmac driveway for 2 cars with a dropped kerb."}}
             """);
 
-        ChatAssistantService.ChatResponse resp = svc.chat(request("how did you mark property RM-9901 as offstreet parking when property description doesn't say that?"));
+        ChatAssistantService.ChatRequest chatReq = new ChatAssistantService.ChatRequest(
+            List.of(new ChatAssistantService.ChatMessage("user", "why is property #1 marked with off-street parking?")),
+            Map.of("maxPrice", 450000),
+            topList
+        );
+        ChatAssistantService.ChatResponse resp = svc.chat(chatReq);
         assertTrue(resp.reply().contains("photo 4"));
         assertTrue(resp.reply().contains("private tarmac driveway"));
         assertEquals(1, resp.toolTrace().size());

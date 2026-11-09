@@ -842,7 +842,9 @@ window.propertyAgentApp = function propertyAgentApp() {
             const f = JSON.parse(JSON.stringify(this.filters));
             f.resultsShown = (this.results || []).length;
             f.totalIndexedProperties = this.totalIndexedCount;
-            const top = (this.results || []).slice(0, 8).map(r => ({
+            const top = (this.results || []).slice(0, 10).map((r, idx) => ({
+                rank: idx + 1,
+                displayRank: '#' + (idx + 1),
                 listingId: r.listingId,
                 address: r.address,
                 type: r.propertyType,

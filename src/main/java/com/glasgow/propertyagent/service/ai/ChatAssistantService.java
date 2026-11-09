@@ -177,7 +177,8 @@ public class ChatAssistantService {
                         ? objectMapper.convertValue(call.path("function").path("arguments"), Map.class)
                         : new LinkedHashMap<>();
                     trace.add(name + " " + safeJson(args));
-                    String result = executeTool(name, args, actions);
+                    List<Map<String, Object>> top = request.topResults() == null ? List.of() : request.topResults();
+                    String result = executeTool(name, args, actions, top);
                     Map<String, Object> toolMsg = new LinkedHashMap<>();
                     toolMsg.put("role", "tool");
                     toolMsg.put("tool_name", name);
@@ -219,10 +220,14 @@ public class ChatAssistantService {
             
             RULES & CAPABILITIES:
             1. Property data comes ONLY from the local database via run_sql / search_properties / get_property / get_property_evidence. Never invent listings, prices, or addresses.
-            2. When the user asks WHY or HOW a feature was marked (e.g. "how did you mark it as offstreet parking when property description doesn't say that", "where is the downstairs WC", "how do you know the garden is south facing"):
-               - Call get_property_evidence for that listing_id.
-               - Inspect metadataSource ('VISION_LLM', 'TEXT_LLM', or 'HEURISTIC'), metadataModel, extractedFeatures, and visionAndReasoningTranscript.
-               - Explain clearly whether the Vision LLM (gemma) analyzed the listing photos and floorplan images directly, whether it was identified via floorplan layout or heuristic regex patterns, or whether it was found in the portal's key features.
+            2. When the user asks WHY or HOW a feature was marked (e.g. "why is property #1 marked with off-street parking", "how did you mark it as offstreet parking when property description doesn't say that", "where is the downstairs WC in house #2"):
+               - Look up the property in the TOP RANKED RESULTS table below:
+                 * "property #1", "the first property", or "first house" -> use the listing_id from Property #1.
+                 * "property #2" -> use the listing_id from Property #2.
+                 * Or if an address is mentioned (e.g. "Buchanan Gardens"), use the listing_id for that address.
+               - NEVER ask the user to provide the listing_id when referring to property #1, #2, 'the first property', or an address shown on screen! Look it up yourself and call get_property_evidence immediately with that listing_id.
+               - From get_property_evidence, inspect metadataSource ('VISION_LLM', 'TEXT_LLM', or 'HEURISTIC'), metadataModel, extractedFeatures, and visionAndReasoningTranscript.
+               - Explain clearly whether the Vision LLM (gemma) analyzed the listing photos and floorplan images directly (e.g. photo 4 shows private tarmac driveway with dropped kerb), whether it was identified via floorplan layout or heuristic regex patterns, or whether it was found in the portal's key features.
             3. Full Application Access:
                - To launch a portal scrape for newly listed homes, call trigger_fetch.
                - To check running scrape progress, call get_job_status. To cancel it, call cancel_job.
@@ -256,11 +261,19 @@ public class ChatAssistantService {
 
         List<Map<String, Object>> top = request.topResults() == null ? List.of() : request.topResults();
         if (!top.isEmpty()) {
-            sb.append("\nTOP RANKED RESULTS CURRENTLY SHOWN (best first):\n");
-            int n = 0;
+            sb.append("\nTOP RANKED RESULTS CURRENTLY SHOWN TO THE USER (best first):\n");
+            int n = 1;
             for (Map<String, Object> r : top) {
-                if (n++ >= 10) break;
-                sb.append("- ").append(truncate(safeJson(r), 400)).append('\n');
+                if (n > 10) break;
+                sb.append("Property #").append(n)
+                  .append(" -> listing_id: \"").append(r.get("listingId")).append("\"")
+                  .append(", Address: \"").append(r.get("address")).append("\"")
+                  .append(", Price: £").append(r.get("priceGbp"))
+                  .append(", Type: ").append(r.get("type"))
+                  .append(", Score: ").append(r.get("score"))
+                  .append(", Commute: ").append(r.get("doorToTargetMins")).append(" mins to Central via ").append(r.get("station"))
+                  .append('\n');
+                n++;
             }
         }
         return sb.toString();
@@ -285,14 +298,15 @@ public class ChatAssistantService {
             ), List.of()));
 
         tools.add(tool("get_property",
-            "Get full details (description, station, commute, metadata) for one listing by listing_id.",
-            Map.of("listing_id", prop("string", "Listing id from search_properties")),
+            "Get full details (description, station, commute, metadata) for one listing by listing_id (or index like '#1', '1', 'first').",
+            Map.of("listing_id", prop("string", "Listing id (e.g. 'RM-148821473') or property index ('#1', '1') from top results")),
             List.of("listing_id")));
 
         tools.add(tool("get_property_evidence",
             "Retrieve the full AI vision transcript, visual notes on each photo and floorplan, heuristic reasoning, and verification badge for a property. "
-                + "Use this when the user asks WHY or HOW a feature was marked (e.g. 'how did you mark it as offstreet parking when property description doesn't say that', 'where is the downstairs WC', 'why is it south facing').",
-            Map.of("listing_id", prop("string", "Listing ID from search_properties or get_property")),
+                + "Use this when the user asks WHY or HOW a feature was marked (e.g. 'why is property #1 marked with offstreet parking', 'how did you mark it as offstreet parking when property description doesn't say that', 'where is the downstairs WC'). "
+                + "Pass the listing_id (e.g. 'RM-148821473') or property index (e.g. '#1', '1', 'first') from the top ranked results. NEVER ask the user for the listing_id!",
+            Map.of("listing_id", prop("string", "Listing ID from search_properties or index like '#1', '1' from top results")),
             List.of("listing_id")));
 
         tools.add(tool("get_logs",
@@ -393,19 +407,23 @@ public class ChatAssistantService {
     }
 
     public String executeTool(String name, Map<String, Object> args, List<Map<String, Object>> actions) {
+        return executeTool(name, args, actions, List.of());
+    }
+
+    public String executeTool(String name, Map<String, Object> args, List<Map<String, Object>> actions, List<Map<String, Object>> topResults) {
         try {
             return switch (name == null ? "" : name) {
                 case "search_properties" -> toolSearchProperties(args);
-                case "get_property" -> toolGetProperty(args);
-                case "get_property_evidence" -> toolGetPropertyEvidence(args);
+                case "get_property" -> toolGetProperty(args, topResults);
+                case "get_property_evidence" -> toolGetPropertyEvidence(args, topResults);
                 case "get_logs" -> toolGetLogs(args);
                 case "apply_filters" -> toolApplyFilters(args, actions);
                 case "run_sql" -> toolRunSql(args);
                 case "trigger_fetch" -> toolTriggerFetch(args, actions);
                 case "get_job_status" -> toolGetJobStatus(args);
                 case "cancel_job" -> toolCancelJob(args);
-                case "update_buyer_workflow" -> toolUpdateBuyerWorkflow(args, actions);
-                case "open_property_in_ui" -> toolOpenPropertyInUi(args, actions);
+                case "update_buyer_workflow" -> toolUpdateBuyerWorkflow(args, actions, topResults);
+                case "open_property_in_ui" -> toolOpenPropertyInUi(args, actions, topResults);
                 case "clear_session" -> toolClearSession(args, actions);
                 case "web_search" -> toolWebSearch(args);
                 case "fetch_webpage" -> toolFetchWebpage(args);
@@ -495,9 +513,13 @@ public class ChatAssistantService {
         return safeJson(out);
     }
 
-    private String toolGetProperty(Map<String, Object> args) {
+    private String toolGetProperty(Map<String, Object> args, List<Map<String, Object>> topResults) {
         if (jdbcClient == null) return "{\"error\":\"Database unavailable\"}";
-        String id = str(args.get("listing_id"));
+        String rawId = str(args.get("listing_id"));
+        if (rawId.isBlank()) rawId = str(args.get("property_number"));
+        if (rawId.isBlank()) rawId = str(args.get("index"));
+        if (rawId.isBlank()) rawId = str(args.get("address"));
+        String id = resolveListingId(rawId, topResults, jdbcClient);
         if (id.isBlank()) return "{\"error\":\"listing_id is required\"}";
         List<Map<String, Object>> rows = jdbcClient.sql("""
             SELECT listing_id, title, address, property_type, price_gbp, bedrooms, price_qualifier,
@@ -525,9 +547,13 @@ public class ChatAssistantService {
         return rows.isEmpty() ? "{\"error\":\"No property with that listing_id\"}" : safeJson(rows.get(0));
     }
 
-    private String toolGetPropertyEvidence(Map<String, Object> args) {
+    private String toolGetPropertyEvidence(Map<String, Object> args, List<Map<String, Object>> topResults) {
         if (jdbcClient == null) return "{\"error\":\"Database unavailable\"}";
-        String id = str(args.get("listing_id"));
+        String rawId = str(args.get("listing_id"));
+        if (rawId.isBlank()) rawId = str(args.get("property_number"));
+        if (rawId.isBlank()) rawId = str(args.get("index"));
+        if (rawId.isBlank()) rawId = str(args.get("address"));
+        String id = resolveListingId(rawId, topResults, jdbcClient);
         if (id.isBlank()) return "{\"error\":\"listing_id is required\"}";
         List<Map<String, Object>> rows = jdbcClient.sql("""
             SELECT listing_id, title, address, property_type, price_gbp,
@@ -640,9 +666,13 @@ public class ChatAssistantService {
         return "{\"status\":\"Cancellation requested for active background scrape job.\"}";
     }
 
-    private String toolUpdateBuyerWorkflow(Map<String, Object> args, List<Map<String, Object>> actions) {
+    private String toolUpdateBuyerWorkflow(Map<String, Object> args, List<Map<String, Object>> actions, List<Map<String, Object>> topResults) {
         if (buyerWorkflowService == null) return "{\"error\":\"Buyer workflow service unavailable in this environment\"}";
-        String listingId = str(args.get("listing_id"));
+        String rawId = str(args.get("listing_id"));
+        if (rawId.isBlank()) rawId = str(args.get("property_number"));
+        if (rawId.isBlank()) rawId = str(args.get("index"));
+        if (rawId.isBlank()) rawId = str(args.get("address"));
+        String listingId = resolveListingId(rawId, topResults, jdbcClient);
         if (listingId.isBlank()) return "{\"error\":\"listing_id is required\"}";
         Boolean shortlisted = args.get("shortlisted") instanceof Boolean b ? b : null;
         Boolean hidden = args.get("hidden") instanceof Boolean b ? b : null;
@@ -672,11 +702,79 @@ public class ChatAssistantService {
         return safeJson(Map.of("status", "updated", "listingId", listingId, "workflow", updated));
     }
 
-    private String toolOpenPropertyInUi(Map<String, Object> args, List<Map<String, Object>> actions) {
-        String listingId = str(args.get("listing_id"));
+    private String toolOpenPropertyInUi(Map<String, Object> args, List<Map<String, Object>> actions, List<Map<String, Object>> topResults) {
+        String rawId = str(args.get("listing_id"));
+        if (rawId.isBlank()) rawId = str(args.get("property_number"));
+        if (rawId.isBlank()) rawId = str(args.get("index"));
+        if (rawId.isBlank()) rawId = str(args.get("address"));
+        String listingId = resolveListingId(rawId, topResults, jdbcClient);
         if (listingId.isBlank()) return "{\"error\":\"listing_id is required\"}";
         actions.add(Map.of("type", "open_property", "listingId", listingId));
         return "{\"status\":\"queued\",\"note\":\"UI will open modal for listing " + listingId + "\"}";
+    }
+
+    private String resolveListingId(String rawId, List<Map<String, Object>> topResults, JdbcClient client) {
+        if (rawId == null) return "";
+        String s = rawId.trim();
+        if (s.isBlank()) return "";
+
+        // Check if rawId is already a known listingId in topResults
+        if (topResults != null) {
+            for (Map<String, Object> r : topResults) {
+                if (s.equalsIgnoreCase(str(r.get("listingId")))) {
+                    return str(r.get("listingId"));
+                }
+            }
+        }
+
+        // Check if rawId specifies an index: "1", "#1", "property 1", "property #1", "first", etc.
+        int index = parsePropertyIndex(s);
+        if (index > 0) {
+            if (topResults != null && index <= topResults.size()) {
+                Object lid = topResults.get(index - 1).get("listingId");
+                if (lid != null && !str(lid).isBlank()) {
+                    return str(lid);
+                }
+            }
+            if (client != null) {
+                try {
+                    List<String> ids = client.sql("SELECT listing_id FROM indexed_properties ORDER BY id ASC LIMIT 1 OFFSET ?")
+                        .param(index - 1).query((rs, i) -> rs.getString("listing_id")).list();
+                    if (!ids.isEmpty() && !ids.get(0).isBlank()) {
+                        return ids.get(0);
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+
+        // Check if rawId matches an address substring in topResults
+        if (topResults != null) {
+            String sLower = s.toLowerCase(Locale.ROOT);
+            for (Map<String, Object> r : topResults) {
+                String addr = str(r.get("address")).toLowerCase(Locale.ROOT);
+                if (!addr.isBlank() && (addr.contains(sLower) || sLower.contains(addr))) {
+                    return str(r.get("listingId"));
+                }
+            }
+        }
+
+        return s;
+    }
+
+    private static int parsePropertyIndex(String text) {
+        if (text == null) return -1;
+        String clean = text.toLowerCase(Locale.ROOT).trim();
+        if (clean.equals("first") || clean.equals("1st") || clean.equals("top")) return 1;
+        if (clean.equals("second") || clean.equals("2nd")) return 2;
+        if (clean.equals("third") || clean.equals("3rd")) return 3;
+        if (clean.startsWith("property")) clean = clean.substring(8).trim();
+        if (clean.startsWith("#")) clean = clean.substring(1).trim();
+        try {
+            int n = Integer.parseInt(clean);
+            return n > 0 && n <= 100 ? n : -1;
+        } catch (Exception e) {
+            return -1;
+        }
     }
 
     private String toolClearSession(Map<String, Object> args, List<Map<String, Object>> actions) {
