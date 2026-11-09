@@ -50,6 +50,7 @@ window.propertyAgentApp = function propertyAgentApp() {
         chatOpen: false,
         chatInput: '',
         chatBusy: false,
+        chatShowDetails: false,
         chatMessages: [],
         chatHints: [
             'Summarise my current filters',
@@ -820,6 +821,10 @@ window.propertyAgentApp = function propertyAgentApp() {
             if (this.chatOpen) this.scrollChat();
         },
 
+        toggleChatDetails() {
+            this.chatShowDetails = !this.chatShowDetails;
+        },
+
         clearChat() {
             this.chatMessages = [];
             this.chatInput = '';
@@ -858,6 +863,21 @@ window.propertyAgentApp = function propertyAgentApp() {
                 this.clearChat();
                 return;
             }
+            if (text === '/thinking' || text === '/actions' || lower === 'show thinking' || lower === 'show actions' || lower === 'view actions' || lower === 'toggle actions') {
+                this.chatShowDetails = !this.chatShowDetails;
+                this.chatMessages.push({
+                    role: 'assistant',
+                    content: this.chatShowDetails ? '⚡ Enabled detailed thinking and tool actions display.' : '👁️ Hidden detailed thinking and tool actions.'
+                });
+                this.scrollChat();
+                return;
+            }
+            if (lower === 'hide thinking' || lower === 'hide actions') {
+                this.chatShowDetails = false;
+                this.chatMessages.push({ role: 'assistant', content: '👁️ Hidden detailed thinking and tool actions.' });
+                this.scrollChat();
+                return;
+            }
             this.chatMessages.push({ role: 'user', content: text });
             this.chatInput = '';
             this.chatBusy = true;
@@ -875,10 +895,20 @@ window.propertyAgentApp = function propertyAgentApp() {
                     this.chatMessages.push({
                         role: 'assistant',
                         content: data.reply || 'AI session cleared. How can I help you afresh?',
-                        tools: data.toolTrace || []
+                        tools: data.toolTrace || [],
+                        actions: data.actions || [],
+                        thinking: data.thinking || '',
+                        showDetails: false
                     });
                 } else {
-                    this.chatMessages.push({ role: 'assistant', content: data.reply, tools: data.toolTrace || [] });
+                    this.chatMessages.push({
+                        role: 'assistant',
+                        content: data.reply,
+                        tools: data.toolTrace || [],
+                        actions: data.actions || [],
+                        thinking: data.thinking || '',
+                        showDetails: false
+                    });
                 }
                 for (const action of (data.actions || [])) {
                     if (action.type !== 'clear_session') {

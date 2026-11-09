@@ -219,6 +219,7 @@ class ChatAssistantServiceTest {
         t.updateBuyerWorkflowUpdatesStateAndQueuesRefreshAction();
         t.openPropertyInUiQueuesOpenPropertyAction();
         t.clearSessionToolEmitsClearSessionAction();
+        t.chatExtractsThinkingSeparatelyFromReply();
         System.out.println("ALL ChatAssistantServiceTest checks PASSED successfully!");
     }
 
@@ -599,5 +600,18 @@ class ChatAssistantServiceTest {
         assertEquals(1, resp.actions().size());
         assertEquals("clear_session", resp.actions().get(0).get("type"));
         assertTrue(resp.reply().contains("cleared the active session"));
+    }
+
+    @Test
+    void chatExtractsThinkingSeparatelyFromReply() {
+        FakeOllama fake = new FakeOllama(om);
+        fake.script.add("""
+            {"message":{"role":"assistant","content":"<think>\\nThe user wants a summary of budget and filters.\\n</think>\\nHere is your summary."}}
+            """);
+        ChatAssistantService svc = service(fake, false);
+        ChatAssistantService.ChatResponse resp = svc.chat(request("summarise"));
+
+        assertEquals("Here is your summary.", resp.reply());
+        assertEquals("The user wants a summary of budget and filters.", resp.thinking());
     }
 }

@@ -57,8 +57,13 @@ public class ChatAssistantService {
         String reply,
         List<Map<String, Object>> actions,
         List<String> toolTrace,
+        String thinking,
         String model
-    ) {}
+    ) {
+        public ChatResponse(String reply, List<Map<String, Object>> actions, List<String> toolTrace, String model) {
+            this(reply, actions, toolTrace, "", model);
+        }
+    }
 
     private final OllamaApiClient ollama;
     private final ObjectMapper objectMapper;
@@ -142,11 +147,23 @@ public class ChatAssistantService {
                 }
 
                 JsonNode msg = resp.path("message");
+                String rawThinking = msg.path("thinking").isTextual() ? msg.path("thinking").asString("")
+                    : msg.path("reasoning_content").isTextual() ? msg.path("reasoning_content").asString("") : "";
                 JsonNode toolCalls = msg.path("tool_calls");
                 if (!useTools || !toolCalls.isArray() || toolCalls.size() == 0) {
                     String reply = msg.path("content").asString("").trim();
+                    String thinking = rawThinking;
+                    if (reply.contains("<think>") && reply.contains("</think>")) {
+                        int start = reply.indexOf("<think>");
+                        int end = reply.indexOf("</think>");
+                        if (end > start) {
+                            String extracted = reply.substring(start + 7, end).trim();
+                            if (thinking.isBlank()) thinking = extracted;
+                            reply = (reply.substring(0, start) + reply.substring(end + 8)).trim();
+                        }
+                    }
                     if (reply.isEmpty()) reply = "I couldn't produce an answer — please try rephrasing.";
-                    return new ChatResponse(notice + reply, actions, trace, chatModel);
+                    return new ChatResponse(notice + reply, actions, trace, thinking, chatModel);
                 }
 
                 @SuppressWarnings("unchecked")

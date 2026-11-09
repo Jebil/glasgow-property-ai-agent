@@ -1441,7 +1441,10 @@
                 <small>Sees your filters &amp; top results • can search listings, change filters, browse the web</small>
             </div>
             <div style="display: flex; align-items: center; gap: 6px;">
-                <button @click="clearChat()" title="Clear conversation session" style="background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.3); border-radius: 4px; padding: 2px 7px; font-size: 11px; font-weight: 500;">🗑️ Clear Session</button>
+                <button @click="toggleChatDetails()" :title="chatShowDetails ? 'Hide all thinking & actions' : 'Show all thinking & actions'" style="background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.3); border-radius: 4px; padding: 2px 7px; font-size: 11px; font-weight: 500;">
+                    <span x-text="chatShowDetails ? '👁️ Hide Actions' : '⚡ Show Actions'"></span>
+                </button>
+                <button @click="clearChat()" title="Clear conversation session" style="background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.3); border-radius: 4px; padding: 2px 7px; font-size: 11px; font-weight: 500;">🗑️ Clear</button>
                 <button @click="toggleChat()" title="Close" style="font-size: 14px; margin-left: 2px;">✕</button>
             </div>
         </div>
@@ -1458,10 +1461,53 @@
             <template x-for="(m, i) in chatMessages" :key="i">
                 <div>
                     <div class="ai-chat-msg" :class="m.role" x-text="m.content"></div>
-                    <div class="ai-chat-tools" x-show="m.tools && m.tools.length" x-text="'🔧 ' + (m.tools || []).map(t => t.split(' ')[0]).join(', ')"></div>
+
+                    <!-- Collapsible Thinking & Actions block -->
+                    <template x-if="m.role === 'assistant' && ((m.tools && m.tools.length) || (m.actions && m.actions.length) || m.thinking)">
+                        <div style="margin: -4px 0 10px 4px;">
+                            <button @click="m.showDetails = !m.showDetails"
+                                    style="background: #eef2ff; border: 1px solid #c7d2fe; color: #4338ca; border-radius: 6px; padding: 2px 8px; font-size: 11px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+                                <span x-text="(m.showDetails || chatShowDetails) ? '▼' : '▶'"></span>
+                                <span x-text="(m.showDetails || chatShowDetails) ? 'Hide Thinking & Actions' : ('⚡ View Actions & Thinking (' + ((m.tools?.length || 0) + (m.actions?.length || 0)) + ')')"></span>
+                            </button>
+
+                            <div x-show="m.showDetails || chatShowDetails" style="margin-top: 6px; padding: 8px 10px; background: #0f172a; color: #e2e8f0; border-radius: 8px; font-size: 11px; font-family: monospace; border: 1px solid #334155;">
+                                <!-- Model Reasoning / Thinking -->
+                                <template x-if="m.thinking">
+                                    <div style="margin-bottom: 8px;">
+                                        <div style="color: #c084fc; font-weight: 600; margin-bottom: 3px;">🧠 Model Reasoning:</div>
+                                        <div style="color: #cbd5e1; white-space: pre-wrap; font-size: 10px; max-height: 140px; overflow-y: auto; background: rgba(0,0,0,0.3); padding: 5px; border-radius: 4px;" x-text="m.thinking"></div>
+                                    </div>
+                                </template>
+
+                                <!-- Tools Executed -->
+                                <template x-if="m.tools && m.tools.length">
+                                    <div style="margin-bottom: 6px;">
+                                        <div style="color: #38bdf8; font-weight: 600; margin-bottom: 3px;">🔧 Tools Executed:</div>
+                                        <template x-for="(t, ti) in m.tools" :key="ti">
+                                            <div style="color: #7dd3fc; margin-bottom: 3px; font-size: 10px; background: rgba(0,0,0,0.25); padding: 3px 6px; border-radius: 4px; word-break: break-all;" x-text="t"></div>
+                                        </template>
+                                    </div>
+                                </template>
+
+                                <!-- UI Actions Dispatched -->
+                                <template x-if="m.actions && m.actions.length">
+                                    <div>
+                                        <div style="color: #4ade80; font-weight: 600; margin-bottom: 3px;">🚀 UI Actions:</div>
+                                        <template x-for="(a, ai) in m.actions" :key="ai">
+                                            <div style="color: #86efac; font-size: 10px; background: rgba(0,0,0,0.25); padding: 3px 6px; border-radius: 4px;" x-text="JSON.stringify(a)"></div>
+                                        </template>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
                 </div>
             </template>
-            <div class="ai-chat-msg assistant" x-show="chatBusy">Thinking…</div>
+            <div class="ai-chat-msg assistant" x-show="chatBusy" style="display: flex; align-items: center; gap: 6px; color: #4338ca;">
+                <span>🧠</span>
+                <span style="font-weight: 500;">AI is thinking &amp; executing tools…</span>
+            </div>
         </div>
         <div class="ai-chat-foot">
             <textarea rows="2" x-model="chatInput" placeholder="e.g. 3-bed detached under £350k with a driveway"
