@@ -668,7 +668,7 @@ public class HomeReportAnalyzerService {
             "messages", List.of(Map.of("role", "user", "content", prompt)),
             "format", "json",
             "stream", false,
-            "options", Map.of("temperature", 0.1, "num_predict", 600)
+            "options", Map.of("temperature", 0.1, "num_predict", 600, "num_ctx", 4096)
         );
 
         JsonNode resp = ollamaClient.postChatJson(req);

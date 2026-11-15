@@ -236,7 +236,7 @@ public class ChatAssistantService {
         body.put("stream", false);
         body.put("think", false);
         body.put("keep_alive", "30m");
-        body.put("options", Map.of("num_ctx", 8192, "temperature", 0.3));
+        body.put("options", Map.of("num_ctx", 4096, "temperature", 0.3));
         if (withTools) body.put("tools", toolDefinitions());
         return body;
     }

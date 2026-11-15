@@ -49,6 +49,7 @@ public class OllamaAgentService {
     private final int floorplanMaxDimension;
     private final int photoMaxDimension;
     private final int photoBatchSize;
+    private final Set<String> singleImageOnlyModels = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public record LlmStatusReport(
         boolean ollamaOnline,
@@ -147,6 +148,12 @@ public class OllamaAgentService {
                 LlmStatusReport status = getLlmStatus(false);
                 if (status.ollamaOnline() && !status.installedModels().isEmpty()) {
                     String model = status.configuredVisionModel();
+                    for (String installed : status.installedModels()) {
+                        String lower = installed.toLowerCase(Locale.ROOT);
+                        if (!installed.equalsIgnoreCase(model) && !isEmbeddingModelName(lower)) {
+                            ollamaClient.unloadModel(installed);
+                        }
+                    }
                     log.info("P7: Pre-pinning and warming up local model '{}' (visionProjector={}, num_ctx=4096, keep_alive=30m)...",
                         model, status.visionModelAvailable());
                     ollamaClient.warmupModel(model, status.visionModelAvailable());
@@ -223,18 +230,48 @@ public class OllamaAgentService {
 
     private String findBestVisionModel(List<String> installed) {
         if (installed == null || installed.isEmpty()) return null;
+        String configuredLower = visionModel != null ? visionModel.toLowerCase(Locale.ROOT) : "gemma4:e4b";
+        String configuredFamily = configuredLower.split(":")[0];
+
+        // Pass 1: Exact or tag-prefix match for configured visionModel (e.g. gemma4:e4b)
         for (String m : installed) {
-            String lower = m.toLowerCase();
-            if (lower.contains("embed") || lower.contains("nomic") || lower.contains("bge")) {
-                continue;
+            String lower = m.toLowerCase(Locale.ROOT);
+            if (isEmbeddingModelName(lower)) continue;
+            if (lower.equals(configuredLower) || lower.contains(configuredLower)) {
+                return m;
             }
-            if (lower.contains(visionModel.toLowerCase()) || lower.contains("vision") || lower.contains("llava")
-                    || lower.contains("gemma4") || lower.contains("minicpm-v")
-                    || lower.contains("qwen2.5vl") || lower.contains("qwen2-vl") || lower.contains("pixtral") || lower.contains("moondream")) {
+        }
+        // Pass 2: Configured model family match (e.g. gemma4)
+        for (String m : installed) {
+            String lower = m.toLowerCase(Locale.ROOT);
+            if (isEmbeddingModelName(lower)) continue;
+            if (!configuredFamily.isBlank() && lower.contains(configuredFamily)) {
+                return m;
+            }
+        }
+        // Pass 3: Strong multi-image vision models
+        for (String m : installed) {
+            String lower = m.toLowerCase(Locale.ROOT);
+            if (isEmbeddingModelName(lower)) continue;
+            if (lower.contains("gemma4") || lower.contains("qwen2.5vl") || lower.contains("qwen2-vl")
+                    || lower.contains("vision") || lower.contains("pixtral")
+                    || lower.contains("minicpm-v") || lower.contains("llava")) {
+                return m;
+            }
+        }
+        // Pass 4: Lightweight single-image fallback (moondream)
+        for (String m : installed) {
+            String lower = m.toLowerCase(Locale.ROOT);
+            if (isEmbeddingModelName(lower)) continue;
+            if (lower.contains("moondream")) {
                 return m;
             }
         }
         return null;
+    }
+
+    private static boolean isEmbeddingModelName(String lower) {
+        return lower.contains("embed") || lower.contains("nomic") || lower.contains("bge") || lower.contains("minilm");
     }
 
     private String findBestTextModel(List<String> installed) {
@@ -301,7 +338,7 @@ public class OllamaAgentService {
             reqBody.put("stream", false);
             reqBody.put("think", true);
             reqBody.put("keep_alive", "30m");
-            reqBody.put("options", Map.of("temperature", 0.15, "num_predict", 2048, "num_ctx", 8192));
+            reqBody.put("options", Map.of("temperature", 0.15, "num_predict", 1024, "num_ctx", 4096));
             reqBody.put("messages", List.of(Map.of("role", "user", "content", prompt)));
 
             log.info("[{}] Running local LLM ('{}', think=true) grounded commute research -> target='{}'...", listingId, modelToUse, targetLabel);
@@ -434,12 +471,16 @@ public class OllamaAgentService {
             String combinedEvidence = description + "\n\n--- VISUAL INSPECTION NOTES FROM ALL " + visualNotes.size() + " DOWNLOADED IMAGES ---\n"
                 + String.join("\n", visualNotes);
 
+            String synthesisModel = (status.configuredRankingModel() != null && !status.configuredRankingModel().isBlank())
+                ? status.configuredRankingModel()
+                : activeVlm;
+
             listener.onProgress(totalFiles, totalFiles,
-                "Synthesizing architectural JSON (" + activeVlm + ", think=false) from all " + totalFiles + " images...");
+                "Synthesizing architectural JSON (" + synthesisModel + ", think=false) from all " + totalFiles + " images...");
 
             return synthesizeStructuredMetadata(
                 listingId,
-                activeVlm,
+                synthesisModel,
                 combinedEvidence,
                 visualNotes,
                 "Verified by Ollama Vision (" + visualNotes.size() + "/" + totalFiles + " downloaded images & floorplans analyzed)"
@@ -496,18 +537,11 @@ public class OllamaAgentService {
 
     private List<String> inspectBatchLocalImages(String visionModelName, List<Path> batch, int startIndex, int totalFiles) {
         if (batch.isEmpty()) return List.of();
-        if (batch.size() == 1) {
-            String note = inspectSingleLocalImage(
-                visionModelName,
-                batch.get(0),
-                false,
-                "Act as an expert UK residential building surveyor inspecting this property photo. Provide a concise 1-2 sentence assessment:\n" +
-                "- Essential Furniture Fit: Assess realistic room capacity for essential furniture (e.g. Master fits King bed + bedside tables; Double fits Double bed + wardrobe; Box fits Single bed or desk only; Living fits 3-seater sofa + dining suite).\n" +
-                "- Permanent Fixtures & Upgrades: Kitchen cabinetry/worktop quality (handleless/quartz vs dated laminate), bathroom suite modernity (walk-in shower/contemporary sanitaryware vs dated bath/tiling), fitted wardrobes/storage cupboards, and exterior driveway/fencing."
-            );
-            return (note == null || note.isBlank())
-                ? List.of()
-                : List.of("Photo [" + (startIndex + 1) + "/" + totalFiles + "] (" + batch.get(0).getFileName() + "): " + note.replaceAll("\\s+", " ").trim());
+        boolean forceSingleImage = batch.size() == 1
+            || (visionModelName != null && visionModelName.toLowerCase(Locale.ROOT).contains("moondream"))
+            || (visionModelName != null && singleImageOnlyModels.contains(visionModelName));
+        if (forceSingleImage) {
+            return inspectBatchOneByOne(visionModelName, batch, startIndex, totalFiles);
         }
 
         try {
@@ -615,26 +649,38 @@ public class OllamaAgentService {
             }
             return results;
         } catch (Exception e) {
-            log.warn("Batch vision pass failed: {}; falling back to single inspection", e.getMessage());
-            List<String> fallbacks = new ArrayList<>();
-            for (int i = 0; i < batch.size(); i++) {
-                Path p = batch.get(i);
-                int photoNum = startIndex + i + 1;
-                String note = inspectSingleLocalImage(
-                    visionModelName,
-                    p,
-                    false,
-                    "Act as an expert UK chartered property reviewer inspecting this photo. Provide a critical, expressive 2-3 sentence assessment:\n" +
-                    "- Room Scale & Proportions: Identify the room/space and gauge realistic room dimensions using visual anchors (e.g. bed clearance on both sides, ceiling height vs sloped attic eaves, sofa scale; flag if wide-angle lens exaggerates room depth).\n" +
-                    "- Storage & Built-in Features: Specifically note any fitted/built-in wardrobes (sliding/mirrored), under-stairs cupboards, pantry towers, or utility storage.\n" +
-                    "- Materials, Condition & Outdoor: Detail cabinetry/worktops/flooring quality and walk-in decor condition. For exteriors, evaluate garden plot size, boundary fence security, and driveway parking capacity."
-                );
-                if (note != null && !note.isBlank()) {
-                    fallbacks.add("Photo [" + photoNum + "/" + totalFiles + "] (" + p.getFileName() + "): " + note.replaceAll("\\s+", " ").trim());
+            String errMsg = e.getMessage() != null ? e.getMessage() : "";
+            if (visionModelName != null && (errMsg.contains("exceeds the available context size") || errMsg.contains("too many images"))) {
+                if (singleImageOnlyModels.add(visionModelName)) {
+                    log.info("Model '{}' has a fixed small context window ({}); switching to single-image inspection mode for remaining photos.",
+                        visionModelName, errMsg.replaceAll("\\s+", " ").trim());
                 }
+            } else {
+                log.warn("Batch vision pass failed: {}; falling back to single inspection", errMsg);
             }
-            return fallbacks;
+            return inspectBatchOneByOne(visionModelName, batch, startIndex, totalFiles);
         }
+    }
+
+    private List<String> inspectBatchOneByOne(String visionModelName, List<Path> batch, int startIndex, int totalFiles) {
+        List<String> fallbacks = new ArrayList<>();
+        for (int i = 0; i < batch.size(); i++) {
+            Path p = batch.get(i);
+            int photoNum = startIndex + i + 1;
+            String note = inspectSingleLocalImage(
+                visionModelName,
+                p,
+                false,
+                "Act as an expert UK chartered property reviewer inspecting this photo. Provide a critical, expressive 2-3 sentence assessment:\n" +
+                "- Room Scale & Proportions: Identify the room/space and gauge realistic room dimensions using visual anchors (e.g. bed clearance on both sides, ceiling height vs sloped attic eaves, sofa scale; flag if wide-angle lens exaggerates room depth).\n" +
+                "- Storage & Built-in Features: Specifically note any fitted/built-in wardrobes (sliding/mirrored), under-stairs cupboards, pantry towers, or utility storage.\n" +
+                "- Materials, Condition & Outdoor: Detail cabinetry/worktops/flooring quality and walk-in decor condition. For exteriors, evaluate garden plot size, boundary fence security, and driveway parking capacity."
+            );
+            if (note != null && !note.isBlank()) {
+                fallbacks.add("Photo [" + photoNum + "/" + totalFiles + "] (" + p.getFileName() + "): " + note.replaceAll("\\s+", " ").trim());
+            }
+        }
+        return fallbacks;
     }
 
     // Pass-through helpers preserving static/instance API compatibility
@@ -750,7 +796,17 @@ public class OllamaAgentService {
                 listingId, modelToUse, verificationBadge, compactJsonForLog);
 
             ExtractedPropertyMetadata extracted = objectMapper.readValue(cleanJson, ExtractedPropertyMetadata.class);
-            List<String> highlights = new ArrayList<>(extracted.extractedHighlights() != null ? extracted.extractedHighlights() : List.of());
+            List<String> highlights = new ArrayList<>();
+            if (extracted.extractedHighlights() != null) {
+                Set<String> seenHighlights = new LinkedHashSet<>();
+                for (String h : extracted.extractedHighlights()) {
+                    if (h == null) continue;
+                    String trimmed = h.trim();
+                    if (trimmed.length() >= 5 && trimmed.chars().anyMatch(Character::isLetter) && seenHighlights.add(trimmed)) {
+                        highlights.add(trimmed);
+                    }
+                }
+            }
             highlights.add(verificationBadge);
             ExtractedPropertyMetadata finalMeta = new ExtractedPropertyMetadata(
                 extracted.hasDownstairsWc(),

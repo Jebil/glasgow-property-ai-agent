@@ -190,6 +190,18 @@ public class OllamaApiClient {
         postChatRaw(req);
     }
 
+    public void unloadModel(String model) {
+        if (model == null || model.isBlank()) return;
+        try {
+            Map<String, Object> req = Map.of(
+                "model", model,
+                "messages", List.of(),
+                "keep_alive", 0
+            );
+            postChatRaw(req);
+        } catch (Exception ignored) {}
+    }
+
     public void tryAutoStartLocalOllama() {
         long now = System.currentTimeMillis();
         // N16: Rate limit auto-start to at most once per 60 seconds
