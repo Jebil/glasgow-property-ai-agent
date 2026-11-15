@@ -387,4 +387,27 @@ class Phase3FeaturesTest {
         out.write("\nendstream\nendobj\n%%EOF".getBytes(StandardCharsets.ISO_8859_1));
         return out.toByteArray();
     }
+
+    @Test
+    void postcodeSectorCatchmentAndPortalCorridorResolutionTests() {
+        SchoolAndAreaProfile eaglesham = schoolService.resolveProfile("12 Montgomery Street, G76 0AW", "4 Bed Detached", 55.741, -4.272);
+        assertTrue(eaglesham.nonDenomSecondary().contains("Mearns Castle"), "G76 0 should resolve to Mearns Castle High School");
+
+        SchoolAndAreaProfile clarkston = schoolService.resolveProfile("55 Busby Road, G76 7BN", "4 Bed Semi", 55.787, -4.276);
+        assertTrue(clarkston.nonDenomSecondary().contains("Williamwood"), "G76 7 should resolve to Williamwood High School");
+
+        SchoolAndAreaProfile lenzie = schoolService.resolveProfile("10 Myrtle Avenue, G66 4HW", "4 Bed Detached", 55.922, -4.155);
+        assertTrue(lenzie.nonDenomSecondary().contains("Lenzie Academy"), "G66 4 should resolve to Lenzie Academy");
+
+        SchoolAndAreaProfile kirkintilloch = schoolService.resolveProfile("22 Industry Street, G66 1AA", "3 Bed Semi", 55.938, -4.153);
+        assertTrue(kirkintilloch.nonDenomSecondary().contains("Kirkintilloch High"), "G66 1 should resolve to Kirkintilloch High School");
+
+        var otmClient = new com.glasgow.propertyagent.service.scraping.OnTheMarketPortalClient(objectMapper, "TestAgent");
+        List<String> tightRadius = otmClient.resolveCorridorSlugs("Hillhead Subway", 3.0);
+        assertEquals(List.of("glasgow"), tightRadius, "Tight radius (< 6 miles) must not expand to outer commuter towns");
+
+        List<String> wideRadius = otmClient.resolveCorridorSlugs("Glasgow Central", 12.0);
+        assertTrue(wideRadius.size() > 1 && wideRadius.contains("bearsden") && wideRadius.contains("uddingston"),
+            "Wide radius (>= 6 miles) from Glasgow hub should expand to commuter corridors");
+    }
 }

@@ -112,6 +112,45 @@ window.PropertyAgentState = (function () {
         };
     }
 
+    const CHAT_MESSAGES_STORAGE_KEY = 'glasgow_property_chat_messages_v1';
+    const CHAT_DETAILS_STORAGE_KEY = 'glasgow_property_chat_show_details_v1';
+    const MAX_PERSISTED_CHAT_MESSAGES = 20;
+
+    function loadPersistedChatMessages() {
+        try {
+            const raw = window.localStorage && window.localStorage.getItem(CHAT_MESSAGES_STORAGE_KEY);
+            if (!raw) return [];
+            const parsed = JSON.parse(raw);
+            if (!Array.isArray(parsed)) return [];
+            return parsed.slice(-MAX_PERSISTED_CHAT_MESSAGES);
+        } catch (e) {
+            return [];
+        }
+    }
+
+    function savePersistedChatMessages(messages) {
+        try {
+            if (!window.localStorage) return;
+            const trimmed = Array.isArray(messages) ? messages.slice(-MAX_PERSISTED_CHAT_MESSAGES) : [];
+            window.localStorage.setItem(CHAT_MESSAGES_STORAGE_KEY, JSON.stringify(trimmed));
+        } catch (e) {}
+    }
+
+    function loadPersistedChatShowDetails() {
+        try {
+            return window.localStorage && window.localStorage.getItem(CHAT_DETAILS_STORAGE_KEY) === 'true';
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function savePersistedChatShowDetails(val) {
+        try {
+            if (!window.localStorage) return;
+            window.localStorage.setItem(CHAT_DETAILS_STORAGE_KEY, val ? 'true' : 'false');
+        } catch (e) {}
+    }
+
     return {
         ALL_PROPERTY_TYPES: ALL_PROPERTY_TYPES,
         ALL_TRANSPORT_MODES: ALL_TRANSPORT_MODES,
@@ -119,6 +158,10 @@ window.PropertyAgentState = (function () {
         createInitialCriteria: createInitialCriteria,
         createResetCriteria: createResetCriteria,
         createDefaultScrapeJob: createDefaultScrapeJob,
-        createInitialFilters: createInitialFilters
+        createInitialFilters: createInitialFilters,
+        loadPersistedChatMessages: loadPersistedChatMessages,
+        savePersistedChatMessages: savePersistedChatMessages,
+        loadPersistedChatShowDetails: loadPersistedChatShowDetails,
+        savePersistedChatShowDetails: savePersistedChatShowDetails
     };
 })();

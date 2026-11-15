@@ -12,9 +12,13 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 
 /**
  * REF-02 / IMP-03 / UPG-01: Single-responsibility image preprocessor for multimodal Vision LLMs.
@@ -30,15 +34,23 @@ public final class VisionImagePreprocessor {
     public static List<Path> filterInformativePhotos(List<Path> photos, int maxCap) {
         if (photos == null || photos.isEmpty()) return List.of();
         List<Path> filtered = new ArrayList<>();
+        Set<String> seenDigests = new HashSet<>();
         for (Path p : photos) {
+            if (p == null) continue;
             String name = p.getFileName().toString().toLowerCase();
             if (name.contains("epc") || name.contains("logo") || name.contains("icon")
-                    || name.contains("energy") || name.contains("qr") || name.contains("badge")) {
+                    || name.contains("energy") || name.contains("qr") || name.contains("badge")
+                    || name.contains("-thumb.") || name.contains("streetview")) {
                 continue;
             }
             try {
                 long size = Files.size(p);
                 if (size < 4000) {
+                    continue;
+                }
+                byte[] rawBytes = Files.readAllBytes(p);
+                String digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(rawBytes));
+                if (!seenDigests.add(digest)) {
                     continue;
                 }
             } catch (Exception ignored) {}

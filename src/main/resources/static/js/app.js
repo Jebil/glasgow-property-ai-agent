@@ -50,8 +50,11 @@ window.propertyAgentApp = function propertyAgentApp() {
         chatOpen: false,
         chatInput: '',
         chatBusy: false,
-        chatShowDetails: false,
-        chatMessages: [],
+        chatShowDetails: State.loadPersistedChatShowDetails(),
+        chatMessages: State.loadPersistedChatMessages(),
+        chatLiveStatus: '',
+        chatLiveTools: [],
+        chatLiveThinking: '',
         chatHints: [
             'Summarise my current filters',
             'Why is property #1 marked with off-street parking?',
@@ -616,6 +619,30 @@ window.propertyAgentApp = function propertyAgentApp() {
             }
         },
 
+        isRealMediaUrl(url) {
+            return typeof url === 'string' && url.trim() !== '' && !url.endsWith('/placeholder.jpg');
+        },
+
+        realPhotoCount(prop) {
+            if (!prop) return 0;
+            if (Array.isArray(prop.allImageUrls) && prop.allImageUrls.length > 0) {
+                return prop.allImageUrls.filter(u => this.isRealMediaUrl(u)).length;
+            }
+            return this.isRealMediaUrl(prop.thumbnailUrl) ? 1 : 0;
+        },
+
+        realFloorplanUrls(prop) {
+            if (!prop) return [];
+            const candidates = (Array.isArray(prop.allFloorplanUrls) && prop.allFloorplanUrls.length > 0)
+                ? prop.allFloorplanUrls
+                : (prop.floorplanUrl ? [prop.floorplanUrl] : []);
+            return candidates.filter(u => this.isRealMediaUrl(u));
+        },
+
+        realMediaCount(prop) {
+            return this.realPhotoCount(prop) + this.realFloorplanUrls(prop).length;
+        },
+
         async runCommuteResearch(prop) {
             this.commuteReports = {
                 ...this.commuteReports,
@@ -823,12 +850,22 @@ window.propertyAgentApp = function propertyAgentApp() {
 
         toggleChatDetails() {
             this.chatShowDetails = !this.chatShowDetails;
+            State.savePersistedChatShowDetails(this.chatShowDetails);
+        },
+
+        persistChatState() {
+            State.savePersistedChatMessages(this.chatMessages);
+            State.savePersistedChatShowDetails(this.chatShowDetails);
         },
 
         clearChat() {
             this.chatMessages = [];
             this.chatInput = '';
             this.chatBusy = false;
+            this.chatLiveStatus = '';
+            this.chatLiveTools = [];
+            this.chatLiveThinking = '';
+            this.persistChatState();
         },
 
         scrollChat() {
@@ -842,7 +879,7 @@ window.propertyAgentApp = function propertyAgentApp() {
             const f = JSON.parse(JSON.stringify(this.filters));
             f.resultsShown = (this.results || []).length;
             f.totalIndexedProperties = this.totalIndexedCount;
-            const top = (this.results || []).slice(0, 10).map((r, idx) => ({
+            const top = (this.results || []).slice(0, 50).map((r, idx) => ({
                 rank: idx + 1,
                 displayRank: '#' + (idx + 1),
                 listingId: r.listingId,
@@ -871,25 +908,50 @@ window.propertyAgentApp = function propertyAgentApp() {
                     role: 'assistant',
                     content: this.chatShowDetails ? '⚡ Enabled detailed thinking and tool actions display.' : '👁️ Hidden detailed thinking and tool actions.'
                 });
+                this.persistChatState();
                 this.scrollChat();
                 return;
             }
             if (lower === 'hide thinking' || lower === 'hide actions') {
                 this.chatShowDetails = false;
                 this.chatMessages.push({ role: 'assistant', content: '👁️ Hidden detailed thinking and tool actions.' });
+                this.persistChatState();
                 this.scrollChat();
                 return;
             }
             this.chatMessages.push({ role: 'user', content: text });
+            this.persistChatState();
             this.chatInput = '';
             this.chatBusy = true;
+            this.chatLiveStatus = 'AI is thinking…';
+            this.chatLiveTools = [];
+            this.chatLiveThinking = '';
             this.scrollChat();
             try {
                 const ctx = this.buildChatContext();
-                const data = await Api.chat({
+                const data = await Api.chatStream({
                     messages: this.chatMessages.map(m => ({ role: m.role, content: m.content })),
                     filters: ctx.filters,
                     topResults: ctx.topResults
+                }, {
+                    onStatus: (msg) => {
+                        this.chatLiveStatus = msg || 'AI is thinking…';
+                        this.scrollChat();
+                    },
+                    onThinking: (th) => {
+                        if (th) {
+                            this.chatLiveThinking = this.chatLiveThinking
+                                ? (this.chatLiveThinking + '\n---\n' + th)
+                                : th;
+                            this.scrollChat();
+                        }
+                    },
+                    onTool: (toolStr) => {
+                        if (toolStr) {
+                            this.chatLiveTools = [...this.chatLiveTools, toolStr];
+                            this.scrollChat();
+                        }
+                    }
                 });
                 const hasClear = (data.actions || []).some(a => a.type === 'clear_session');
                 if (hasClear) {
@@ -912,6 +974,7 @@ window.propertyAgentApp = function propertyAgentApp() {
                         showDetails: false
                     });
                 }
+                this.persistChatState();
                 for (const action of (data.actions || [])) {
                     if (action.type !== 'clear_session') {
                         await this.applyChatAction(action);
@@ -919,8 +982,12 @@ window.propertyAgentApp = function propertyAgentApp() {
                 }
             } catch (e) {
                 this.chatMessages.push({ role: 'assistant', content: 'Sorry, the assistant request failed: ' + e.message });
+                this.persistChatState();
             } finally {
                 this.chatBusy = false;
+                this.chatLiveStatus = '';
+                this.chatLiveTools = [];
+                this.chatLiveThinking = '';
                 this.scrollChat();
             }
         },
@@ -929,11 +996,16 @@ window.propertyAgentApp = function propertyAgentApp() {
             if (!action || !action.type) return;
             if (action.type === 'apply_filters') {
                 const allowed = ['maxPrice', 'minBedrooms', 'radiusMiles', 'centerLocation', 'maxDoorToCentralCommuteMins',
-                    'minServicesPerHour', 'requireFreeStationParking', 'requireStepFreeCategoryA', 'propertyTypes', 'transportModes'];
+                    'minServicesPerHour', 'requireFreeStationParking', 'requireStepFreeCategoryA', 'propertyTypes', 'transportModes',
+                    'secondCenterLocation', 'maxSecondCommuteMins', 'firstTimeBuyer', 'additionalDwelling', 'depositPct',
+                    'maxUpfrontCashGbp', 'workflowFilter'];
                 for (const key of allowed) {
                     if (action.filters && action.filters[key] !== undefined) {
                         this.filters[key] = action.filters[key];
                     }
+                }
+                if (action.filters && action.filters.secondCenterLocation) {
+                    this.showSecondCommuter = true;
                 }
                 if (action.clearCriteria) {
                     this.filters.dynamicCriteria = [];

@@ -11,7 +11,7 @@
     <!-- Console Appender filtered by configurable threshold (default: WARN so console stays clean) -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
-            <level>${consoleThreshold}</level>
+            <level>${consoleThreshold:-WARN}</level>
         </filter>
         <encoder>
             <pattern>${CONSOLE_LOG_PATTERN}</pattern>
@@ -21,7 +21,7 @@
 
     <!-- Rolling File Appender with Size and Time based archiving -->
     <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-        <file>${logFile}</file>
+        <file>${logFile:-./logs/property-agent.log}</file>
         <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
             <fileNamePattern>./logs/property-agent-%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
             <maxFileSize>25MB</maxFileSize>

@@ -110,7 +110,9 @@ public class HeadlessChromeService {
                 throw ie;
             } catch (Exception cdpEx) {
                 log.debug("Warm CDP fetch fell back to --dump-dom for {}: {}", url, cdpEx.getMessage());
-                stopWarmChrome();
+                if (!isWarmChromeResponsive()) {
+                    stopWarmChrome();
+                }
             }
         }
 
@@ -306,6 +308,24 @@ public class HeadlessChromeService {
             this.warmProfileDir = profileDir;
             log.info("Started warm persistent Headless Chrome CDP daemon on 127.0.0.1:{}", freePort);
             return freePort;
+        }
+    }
+
+    private boolean isWarmChromeResponsive() {
+        Process proc = this.warmChromeProcess;
+        int port = this.warmDebugPort;
+        if (proc == null || !proc.isAlive() || port <= 0) {
+            return false;
+        }
+        try {
+            HttpRequest req = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/json/version"))
+                .timeout(Duration.ofSeconds(1))
+                .GET()
+                .build();
+            HttpResponse<String> res = getCdpHttpClient().send(req, HttpResponse.BodyHandlers.ofString());
+            return res.statusCode() == 200;
+        } catch (Exception e) {
+            return false;
         }
     }
 

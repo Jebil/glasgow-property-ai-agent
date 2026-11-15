@@ -196,6 +196,12 @@
                         <template x-for="st in stations" :key="st.stationName">
                             <option :value="st.stationName"></option>
                         </template>
+                        <template x-if="filters.centerLocation && !stations.some(s => s.stationName.toLowerCase() === filters.centerLocation.toLowerCase())">
+                            <option :value="filters.centerLocation"></option>
+                        </template>
+                        <template x-if="filters.secondCenterLocation && !stations.some(s => s.stationName.toLowerCase() === filters.secondCenterLocation.toLowerCase())">
+                            <option :value="filters.secondCenterLocation"></option>
+                        </template>
                     </datalist>
                     <div class="flex flex-wrap gap-1 pt-0.5">
                         <template x-for="hub in ['Glasgow Central', 'Glasgow Queen Street', 'Hillhead Subway', 'QEUH', 'Uddingston', 'East Kilbride', 'Motherwell', 'Bearsden']" :key="hub">
@@ -856,7 +862,7 @@
                                         <div class="flex flex-wrap items-center gap-1.5 mt-2">
                                             <button @click="openPropertyModal(prop)"
                                                     class="px-2.5 py-1 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-semibold transition"
-                                                    x-text="'📐 Photos, Floorplans & Home Report (' + ((prop.allImageUrls ? prop.allImageUrls.length : 1) + (prop.allFloorplanUrls ? prop.allFloorplanUrls.length : 1)) + ')'">
+                                                    x-text="'📐 Photos, Floorplans & Home Report (' + realMediaCount(prop) + ')'">
                                             </button>
                                             <button @click="runCommuteResearch(prop)"
                                                     :disabled="isCommuteLoading(prop.listingId)"
@@ -1124,7 +1130,7 @@
                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
                         <div class="space-y-2">
                             <p class="text-xs font-bold uppercase text-slate-500"
-                               x-text="'Downloaded Property Photos (' + (selectedProperty.allImageUrls ? selectedProperty.allImageUrls.length : 1) + ')'"></p>
+                               x-text="'Downloaded Property Photos (' + realPhotoCount(selectedProperty) + ')'"></p>
                             <img :src="activeModalPhoto || selectedProperty.thumbnailUrl" alt="Active Photo"
                                  class="w-full h-72 object-cover rounded-xl border border-slate-200 bg-slate-100">
                             <div class="grid grid-cols-6 gap-1.5 max-h-36 overflow-y-auto pt-1"
@@ -1139,9 +1145,14 @@
                         </div>
                         <div class="space-y-2">
                             <p class="text-xs font-bold uppercase text-slate-500"
-                               x-text="'Architectural Floorplans (' + (selectedProperty.allFloorplanUrls ? selectedProperty.allFloorplanUrls.length : 1) + ')'"></p>
+                               x-text="'Architectural Floorplans (' + realFloorplanUrls(selectedProperty).length + ')'"></p>
                             <div class="space-y-2 max-h-[26rem] overflow-y-auto">
-                                <template x-for="(fpUrl, fIdx) in (selectedProperty.allFloorplanUrls && selectedProperty.allFloorplanUrls.length ? selectedProperty.allFloorplanUrls : [selectedProperty.floorplanUrl])" :key="fpUrl + '-' + fIdx">
+                                <template x-if="realFloorplanUrls(selectedProperty).length === 0">
+                                    <div class="w-full h-72 flex items-center justify-center bg-slate-50 rounded-xl border border-dashed border-slate-300 text-xs text-slate-500 p-4 text-center">
+                                        No architectural floorplan published on portal for this listing.
+                                    </div>
+                                </template>
+                                <template x-for="(fpUrl, fIdx) in realFloorplanUrls(selectedProperty)" :key="fpUrl + '-' + fIdx">
                                     <a :href="fpUrl" target="_blank" rel="noopener" title="Click to open full-resolution floorplan in new tab">
                                         <img :src="fpUrl" alt="Floorplan"
                                              class="w-full h-72 object-contain bg-slate-50 rounded-xl border border-slate-200 p-2 hover:border-indigo-400 transition">
@@ -1504,9 +1515,21 @@
                     </template>
                 </div>
             </template>
-            <div class="ai-chat-msg assistant" x-show="chatBusy" style="display: flex; align-items: center; gap: 6px; color: #4338ca;">
-                <span>🧠</span>
-                <span style="font-weight: 500;">AI is thinking &amp; executing tools…</span>
+            <div class="ai-chat-msg assistant" x-show="chatBusy" style="color: #4338ca; display: flex; flex-direction: column; gap: 6px;">
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <span>🧠</span>
+                    <span style="font-weight: 600;" x-text="chatLiveStatus || 'AI is thinking & executing tools…'"></span>
+                </div>
+                <template x-if="chatLiveTools && chatLiveTools.length > 0">
+                    <div style="padding: 6px 8px; background: #0f172a; color: #7dd3fc; border-radius: 6px; font-size: 10px; font-family: monospace;">
+                        <template x-for="(lt, lti) in chatLiveTools" :key="lti">
+                            <div style="margin-bottom: 2px; word-break: break-all;" x-text="'🔧 ' + lt"></div>
+                        </template>
+                    </div>
+                </template>
+                <template x-if="chatShowDetails && chatLiveThinking">
+                    <div style="padding: 6px 8px; background: #1e1b4b; color: #e2e8f0; border-radius: 6px; font-size: 10px; font-family: monospace; white-space: pre-wrap; max-height: 110px; overflow-y: auto;" x-text="chatLiveThinking"></div>
+                </template>
             </div>
         </div>
         <div class="ai-chat-foot">

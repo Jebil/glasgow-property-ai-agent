@@ -63,11 +63,15 @@ public class OnTheMarketPortalClient {
     }
 
     public List<String> resolveCorridorSlugs(String centerLocation) {
+        return resolveCorridorSlugs(centerLocation, 15.0);
+    }
+
+    public List<String> resolveCorridorSlugs(String centerLocation, double radiusMiles) {
         String primarySlug = toLocationSlug(centerLocation);
         List<String> locations = new ArrayList<>();
         locations.add(primarySlug);
-        if (primarySlug.equals("glasgow")) {
-            for (String extra : List.of("uddingston", "cambuslang", "east-kilbride", "motherwell")) {
+        if (primarySlug.equals("glasgow") && radiusMiles >= 6.0) {
+            for (String extra : List.of("uddingston", "cambuslang", "east-kilbride", "motherwell", "bearsden", "giffnock", "paisley")) {
                 if (!locations.contains(extra)) {
                     locations.add(extra);
                 }
@@ -306,10 +310,25 @@ public class OnTheMarketPortalClient {
         return PortalListingCandidate.parseSafePriceString(item.path("short-price").asString(""));
     }
 
-    private String toLocationSlug(String centerLocation) {
+    private static final Set<String> GLASGOW_CITY_HUB_KEYWORDS = Set.of(
+        "glasgow", "queen street", "partick", "exhibition centre", "charing cross",
+        "argyle street", "high street", "buchanan street", "st enoch", "hillhead",
+        "bridge street", "kelvinhall", "kelvinbridge", "cowcaddens", "st george",
+        "cessnock", "ibrox", "govan", "shields road", "kinning park", "west street",
+        "qeuh", "queen elizabeth", "royal infirmary", "gartnavel"
+    );
+
+    String toLocationSlug(String centerLocation) {
         if (centerLocation == null || centerLocation.isBlank()) return "glasgow";
-        String clean = centerLocation.toLowerCase(Locale.ROOT)
+        String lower = centerLocation.toLowerCase(Locale.ROOT).trim();
+        for (String hubKw : GLASGOW_CITY_HUB_KEYWORDS) {
+            if (lower.contains(hubKw)) {
+                return "glasgow";
+            }
+        }
+        String clean = lower
             .replaceAll("\\(.*?\\)", "")
+            .replace("subway", "")
             .replace("station", "")
             .replace("central", "")
             .replace("gilmour street", "")

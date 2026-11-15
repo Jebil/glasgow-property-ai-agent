@@ -65,16 +65,130 @@ public class ReadOnlySqlExecutor {
         return dataSource != null;
     }
 
-    /** Validates and normalises the SQL; throws IllegalArgumentException with a model-readable reason. */
+    /**
+     * Validates and normalises the SQL using a single-pass lexer so comments inside string literals
+     * cannot corrupt quote boundaries and dollar-quoted strings are rejected.
+     * Throws IllegalArgumentException with a model-readable reason on violation.
+     */
     public static String validate(String sql) {
         if (sql == null || sql.isBlank()) throw new IllegalArgumentException("SQL is empty");
-        String s = sql.trim();
-        // strip comments so they can't hide keywords or terminators
-        s = s.replaceAll("(?s)/\\*.*?\\*/", " ").replaceAll("(?m)--.*$", " ").trim();
-        while (s.endsWith(";")) s = s.substring(0, s.length() - 1).trim();
+        String trimmed = sql.trim();
+
+        StringBuilder cleanedSql = new StringBuilder(trimmed.length());
+        StringBuilder codeOnly = new StringBuilder(trimmed.length());
+
+        int len = trimmed.length();
+        int i = 0;
+        while (i < len) {
+            char ch = trimmed.charAt(i);
+            char next = (i + 1 < len) ? trimmed.charAt(i + 1) : '\0';
+
+            // 1. Line comment (-- ...) outside quotes
+            if (ch == '-' && next == '-') {
+                i += 2;
+                while (i < len && trimmed.charAt(i) != '\n' && trimmed.charAt(i) != '\r') {
+                    i++;
+                }
+                cleanedSql.append(' ');
+                codeOnly.append(' ');
+                continue;
+            }
+
+            // 2. Block comment (/* ... */) outside quotes
+            if (ch == '/' && next == '*') {
+                i += 2;
+                boolean closed = false;
+                while (i + 1 < len) {
+                    if (trimmed.charAt(i) == '*' && trimmed.charAt(i + 1) == '/') {
+                        i += 2;
+                        closed = true;
+                        break;
+                    }
+                    i++;
+                }
+                if (!closed) {
+                    throw new IllegalArgumentException("Unclosed block comment in SQL");
+                }
+                cleanedSql.append(' ');
+                codeOnly.append(' ');
+                continue;
+            }
+
+            // 3. Single-quoted string literal ('...' with '' escapes)
+            if (ch == '\'') {
+                cleanedSql.append(ch);
+                codeOnly.append("''");
+                i++;
+                boolean closed = false;
+                while (i < len) {
+                    char c = trimmed.charAt(i);
+                    cleanedSql.append(c);
+                    if (c == '\'') {
+                        if (i + 1 < len && trimmed.charAt(i + 1) == '\'') {
+                            cleanedSql.append('\'');
+                            i += 2;
+                            continue;
+                        }
+                        i++;
+                        closed = true;
+                        break;
+                    }
+                    i++;
+                }
+                if (!closed) {
+                    throw new IllegalArgumentException("Unclosed string literal in SQL");
+                }
+                continue;
+            }
+
+            // 4. Double-quoted identifier ("..." with "" escapes)
+            if (ch == '"') {
+                cleanedSql.append(ch);
+                codeOnly.append("\"\"");
+                i++;
+                boolean closed = false;
+                while (i < len) {
+                    char c = trimmed.charAt(i);
+                    cleanedSql.append(c);
+                    if (c == '"') {
+                        if (i + 1 < len && trimmed.charAt(i + 1) == '"') {
+                            cleanedSql.append('"');
+                            i += 2;
+                            continue;
+                        }
+                        i++;
+                        closed = true;
+                        break;
+                    }
+                    i++;
+                }
+                if (!closed) {
+                    throw new IllegalArgumentException("Unclosed double-quoted identifier in SQL");
+                }
+                continue;
+            }
+
+            // 5. Reject PostgreSQL dollar-quoted strings ($$ or $tag$) outside quotes
+            if (ch == '$' && (next == '$' || Character.isLetter(next) || next == '_')) {
+                throw new IllegalArgumentException("Dollar-quoted strings are not allowed in read-only queries");
+            }
+
+            cleanedSql.append(ch);
+            codeOnly.append(ch);
+            i++;
+        }
+
+        String s = cleanedSql.toString().trim();
+        while (s.endsWith(";")) {
+            s = s.substring(0, s.length() - 1).trim();
+        }
         if (s.isEmpty()) throw new IllegalArgumentException("SQL is empty");
-        // string literals are data, not code: remove them before keyword/terminator checks
-        String code = s.replaceAll("'(?:[^']|'')*'", "''").toLowerCase(Locale.ROOT);
+
+        String code = codeOnly.toString().trim();
+        while (code.endsWith(";")) {
+            code = code.substring(0, code.length() - 1).trim();
+        }
+        code = code.toLowerCase(Locale.ROOT);
         if (code.contains(";")) throw new IllegalArgumentException("Only a single statement is allowed (no ';')");
         if (!(code.startsWith("select") || code.startsWith("with"))) {
             throw new IllegalArgumentException("Only SELECT queries (optionally starting with WITH) are allowed");

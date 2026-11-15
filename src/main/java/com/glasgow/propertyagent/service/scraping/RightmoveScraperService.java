@@ -434,7 +434,7 @@ public class RightmoveScraperService {
             int maxPrice,
             int minBedrooms) {
         int added = 0;
-        List<String> locations = otmClient.resolveCorridorSlugs(centerLocation);
+        List<String> locations = otmClient.resolveCorridorSlugs(centerLocation, radiusMiles);
         stateTracker.initCorridors(locations.size());
 
         for (int idx = 0; idx < locations.size(); idx++) {

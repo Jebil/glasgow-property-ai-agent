@@ -574,6 +574,10 @@ public class StationCommuteService {
             }
         }
 
+        if (nearestOriginSubway == null || nearestTargetSubway == null) {
+            return null;
+        }
+
         int subwayFreq = 15; // SPT Glasgow Subway runs every 4 minutes at peak (15 services/hr)
         int hopDiff = Math.abs(nearestOriginSubway.circleIndex() - nearestTargetSubway.circleIndex());
         int shortestHops = Math.min(hopDiff, 15 - hopDiff); // Inner vs Outer Circle
@@ -587,12 +591,17 @@ public class StationCommuteService {
         int directSubwayDoorMins = accessSubwayMins + circleRideMins + targetEgressMins;
 
         // Option B: ScotRail into Partick / St Enoch / Buchanan St + SPT Subway transfer
-        String originRailKey = nearestRail.stationName().toLowerCase();
+        String originRailKey = nearestRail != null && nearestRail.stationName() != null
+            ? nearestRail.stationName().toLowerCase(Locale.ROOT)
+            : "";
         SubwayHub interchangeHub = "NORTH_CLYDE".equals(stationCorridorGroup.get(originRailKey))
             ? subwayRegistry.get("partick rail & subway hub")
             : (Boolean.TRUE.equals(stationTerminatesQueenStHigh.get(originRailKey))
                 ? subwayRegistry.get("buchanan street subway")
                 : subwayRegistry.get("st enoch subway"));
+        if (interchangeHub == null) {
+            interchangeHub = nearestOriginSubway;
+        }
 
         int interchangeHops = Math.abs(interchangeHub.circleIndex() - nearestTargetSubway.circleIndex());
         int shortestInterchangeHops = Math.min(interchangeHops, 15 - interchangeHops);

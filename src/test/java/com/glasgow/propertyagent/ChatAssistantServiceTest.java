@@ -347,6 +347,12 @@ class ChatAssistantServiceTest {
 
         assertThrows(IllegalArgumentException.class, () -> WebSearchClient.assertPublicHttpUri(URI.create("http://127.0.0.1:8080/x")));
         assertThrows(IllegalArgumentException.class, () -> WebSearchClient.assertPublicHttpUri(URI.create("file:///etc/passwd")));
+        assertThrows(IllegalArgumentException.class, () -> WebSearchClient.resolveAndValidateRedirect(
+            URI.create("https://93.184.216.34/start"), "http://127.0.0.1:11434/api/tags"));
+        assertThrows(IllegalArgumentException.class, () -> WebSearchClient.resolveAndValidateRedirect(
+            URI.create("https://93.184.216.34/start"), "http://169.254.169.254/latest/meta-data"));
+        assertEquals(URI.create("https://93.184.216.34/next"),
+            WebSearchClient.resolveAndValidateRedirect(URI.create("https://93.184.216.34/start"), "/next"));
     }
 
     /** Fake executor: no real database, records SQL and returns canned rows. */
@@ -368,6 +374,7 @@ class ChatAssistantServiceTest {
         assertDoesNotThrow(() -> ReadOnlySqlExecutor.validate("SELECT count(*) FROM indexed_properties;"));
         assertDoesNotThrow(() -> ReadOnlySqlExecutor.validate("WITH x AS (SELECT 1) SELECT * FROM x"));
         assertDoesNotThrow(() -> ReadOnlySqlExecutor.validate("select * from indexed_properties where title ilike '%delete; drop%' -- ok"));
+        assertDoesNotThrow(() -> ReadOnlySqlExecutor.validate("SELECT * FROM indexed_properties WHERE address LIKE '%--%' AND title LIKE '%/*%'"));
         assertDoesNotThrow(() -> ReadOnlySqlExecutor.validate("SELECT analyzed_at, created_at FROM indexed_properties"));
         for (String bad : List.of(
                 "DELETE FROM indexed_properties",
@@ -376,6 +383,11 @@ class ChatAssistantServiceTest {
                 "SELECT pg_sleep(100)",
                 "WITH d AS (DELETE FROM indexed_properties RETURNING *) SELECT * FROM d",
                 "SELECT /* hidden */ 1; /* x */ INSERT INTO t VALUES (1)",
+                "SELECT '--' AS a, 'x'; DROP TABLE indexed_properties; --' AS b",
+                "SELECT $$DELETE FROM indexed_properties$$",
+                "SELECT $tag$DROP TABLE indexed_properties$tag$",
+                "SELECT 'unterminated literal FROM indexed_properties",
+                "SELECT /* unclosed comment FROM indexed_properties",
                 "COPY indexed_properties TO PROGRAM 'calc'",
                 "SELECT pg_read_file('/etc/passwd')",
                 "  ",
@@ -627,5 +639,42 @@ class ChatAssistantServiceTest {
 
         assertEquals("Here is your summary.", resp.reply());
         assertEquals("The user wants a summary of budget and filters.", resp.thinking());
+    }
+
+    @Test
+    void chatStreamListenerEmitsStatusThinkingToolAndDoneEvents() {
+        FakeOllama fake = new FakeOllama(om);
+        fake.script.add("""
+            {"message":{"role":"assistant","thinking":"Checking budget filter first.","content":"","tool_calls":[
+              {"function":{"name":"apply_filters","arguments":{"maxPrice":320000}}}]}}
+            """);
+        fake.script.add("""
+            {"message":{"role":"assistant","content":"Updated maxPrice to £320,000."}}
+            """);
+        ChatAssistantService svc = service(fake, false);
+
+        List<String> statuses = new ArrayList<>();
+        List<String> thinkings = new ArrayList<>();
+        List<String> tools = new ArrayList<>();
+        List<ChatAssistantService.ChatResponse> dones = new ArrayList<>();
+
+        ChatAssistantService.ChatResponse resp = svc.chat(request("set max price 320k"), (eventType, data) -> {
+            if ("status".equals(eventType) && data instanceof Map<?, ?> m) {
+                statuses.add(String.valueOf(m.get("message")));
+            } else if ("thinking".equals(eventType) && data instanceof Map<?, ?> m) {
+                thinkings.add(String.valueOf(m.get("thinking")));
+            } else if ("tool".equals(eventType) && data instanceof Map<?, ?> m) {
+                tools.add(String.valueOf(m.get("tool")));
+            } else if ("done".equals(eventType) && data instanceof ChatAssistantService.ChatResponse cr) {
+                dones.add(cr);
+            }
+        });
+
+        assertFalse(statuses.isEmpty());
+        assertEquals(List.of("Checking budget filter first."), thinkings);
+        assertEquals(1, tools.size());
+        assertTrue(tools.get(0).startsWith("apply_filters "));
+        assertEquals(1, dones.size());
+        assertEquals(resp.reply(), dones.get(0).reply());
     }
 }

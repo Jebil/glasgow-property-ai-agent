@@ -164,6 +164,48 @@ public class PropertyEmbeddingService {
         criteriaBatchCache.invalidateAll();
     }
 
+    /**
+     * Synchronizes the OVERVIEW chunk text (and vector embedding if online) in property_embeddings
+     * when a property's asking price or price qualifier changes during a delta scrape.
+     */
+    public void syncOverviewPriceChange(String listingId, int newPriceGbp, String newQualifier) {
+        if (listingId == null || listingId.isBlank() || jdbcTemplate == null) return;
+        clearCriteriaBatchCache();
+        try {
+            List<String> existingTexts = jdbcTemplate.query(
+                "SELECT chunk_text FROM property_embeddings WHERE listing_id = ? AND chunk_type = 'OVERVIEW'",
+                (rs, rowNum) -> rs.getString("chunk_text"),
+                listingId
+            );
+            if (existingTexts == null || existingTexts.isEmpty()) return;
+
+            String oldText = existingTexts.get(0);
+            String safeQual = newQualifier == null ? "" : newQualifier.trim();
+            String replacement = "Price: £" + newPriceGbp + " (" + safeQual + ").";
+            String updatedText = oldText.replaceAll("Price:\\s*£[0-9,]+\\s*\\([^)]*\\)\\.", java.util.regex.Matcher.quoteReplacement(replacement));
+            if (updatedText.equals(oldText)) return;
+
+            float[] newVec = null;
+            if (isModelOnline()) {
+                String docText = updatedText.startsWith("search_document:") ? updatedText : "search_document: " + updatedText;
+                newVec = generateEmbedding(docText);
+            }
+            if (newVec != null) {
+                jdbcTemplate.update(
+                    "UPDATE property_embeddings SET chunk_text = ?, embedding = ?::vector WHERE listing_id = ? AND chunk_type = 'OVERVIEW'",
+                    updatedText, vectorToString(newVec), listingId
+                );
+            } else {
+                jdbcTemplate.update(
+                    "UPDATE property_embeddings SET chunk_text = ? WHERE listing_id = ? AND chunk_type = 'OVERVIEW'",
+                    updatedText, listingId
+                );
+            }
+        } catch (Exception e) {
+            log.debug("[{}] Overview embedding price sync skipped: {}", listingId, e.getMessage());
+        }
+    }
+
     public float[] generateEmbedding(String text) {
         if (text == null || text.isBlank()) return null;
         List<float[]> res = generateBatchEmbeddings(List.of(text));

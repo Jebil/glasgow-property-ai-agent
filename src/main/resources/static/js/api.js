@@ -120,6 +120,81 @@ window.PropertyAgentApi = (function () {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
+        },
+        chatStream: async function (payload, handlers) {
+            const h = handlers || {};
+            let donePayload = null;
+            try {
+                const res = await fetch('/api/chat/stream', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'text/event-stream'
+                    },
+                    body: JSON.stringify(payload)
+                });
+                if (!res.ok || !res.body) {
+                    return this.chat(payload);
+                }
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
+
+                const dispatchEvent = function (eventName, rawData) {
+                    if (!rawData) return;
+                    let parsed;
+                    try {
+                        parsed = JSON.parse(rawData);
+                    } catch (e) {
+                        return;
+                    }
+                    if (eventName === 'status' && h.onStatus) {
+                        h.onStatus(parsed.message || '');
+                    } else if (eventName === 'thinking' && h.onThinking) {
+                        h.onThinking(parsed.thinking || '');
+                    } else if (eventName === 'tool' && h.onTool) {
+                        h.onTool(parsed.tool || '');
+                    } else if (eventName === 'done') {
+                        donePayload = parsed;
+                        if (h.onDone) h.onDone(parsed);
+                    } else if (eventName === 'error') {
+                        const err = new Error(parsed.message || 'Chat stream failed');
+                        err.isStreamError = true;
+                        throw err;
+                    }
+                };
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    let sepIdx;
+                    while ((sepIdx = buffer.indexOf('\n\n')) !== -1) {
+                        const block = buffer.slice(0, sepIdx);
+                        buffer = buffer.slice(sepIdx + 2);
+                        let eventName = 'message';
+                        const dataLines = [];
+                        for (const line of block.split(/\r?\n/)) {
+                            if (line.startsWith('event:')) {
+                                eventName = line.slice(6).trim();
+                            } else if (line.startsWith('data:')) {
+                                dataLines.push(line.slice(5).trim());
+                            }
+                        }
+                        if (dataLines.length > 0) {
+                            dispatchEvent(eventName, dataLines.join('\n'));
+                        }
+                    }
+                }
+                if (donePayload) {
+                    return donePayload;
+                }
+            } catch (e) {
+                if (e && e.isStreamError) {
+                    throw e;
+                }
+            }
+            return this.chat(payload);
         }
     };
 })();

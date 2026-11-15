@@ -10,8 +10,7 @@ import com.glasgow.propertyagent.service.app.PropertyMetadataCache;
 import com.glasgow.propertyagent.service.app.BuyerWorkflowService;
 import com.glasgow.propertyagent.service.ai.OllamaAgentService;
 
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
+import com.glasgow.propertyagent.service.app.CommuteAdvisoryService;
 import com.glasgow.propertyagent.entity.IndexedPropertyEntity;
 import com.glasgow.propertyagent.model.BuyerWorkflowState;
 import com.glasgow.propertyagent.model.ExtractedPropertyMetadata;
@@ -88,21 +87,13 @@ public class PropertyAgentController {
     private final BuyerWorkflowService buyerWorkflowService;
     private final HomeReportAnalyzerService homeReportAnalyzerService;
     private final GlasgowSchoolAndAreaService schoolAndAreaService;
+    private final CommuteAdvisoryService commuteAdvisoryService;
     private final ObjectMapper objectMapper;
     private final JdbcTemplate jdbcTemplate;
     private final JdbcClient jdbcClient;
 
-    // SIMP-04: Bounded Caffeine cache for on-demand commute research dossiers
-    private final Cache<String, OllamaAgentService.CommuteResearchReport> commuteReportCache = Caffeine.newBuilder()
-        .maximumSize(500)
-        .expireAfterWrite(Duration.ofHours(2))
-        .build();
-
     // REF-05: Event-driven SSE subscriber pool (zero idle background timer polling)
     private final Set<SseEmitter> sseEmitters = ConcurrentHashMap.newKeySet();
-
-    // Cached dynamic search suggestions across database
-    private volatile List<String> cachedSuggestions = null;
 
     private PropertyDailyFetchScheduler scheduler;
 
@@ -123,7 +114,29 @@ public class PropertyAgentController {
         this(
             repository, stationService, ollamaAgent, scraperService, embeddingService,
             metadataCache, new BuyerWorkflowService(), new HomeReportAnalyzerService(),
-            new GlasgowSchoolAndAreaService(objectMapper), objectMapper, jdbcTemplate
+            new GlasgowSchoolAndAreaService(objectMapper),
+            new CommuteAdvisoryService(stationService, ollamaAgent),
+            objectMapper, jdbcTemplate
+        );
+    }
+
+    public PropertyAgentController(
+            IndexedPropertyRepository repository,
+            StationCommuteService stationService,
+            OllamaAgentService ollamaAgent,
+            RightmoveScraperService scraperService,
+            PropertyEmbeddingService embeddingService,
+            PropertyMetadataCache metadataCache,
+            BuyerWorkflowService buyerWorkflowService,
+            HomeReportAnalyzerService homeReportAnalyzerService,
+            GlasgowSchoolAndAreaService schoolAndAreaService,
+            ObjectMapper objectMapper,
+            JdbcTemplate jdbcTemplate) {
+        this(
+            repository, stationService, ollamaAgent, scraperService, embeddingService,
+            metadataCache, buyerWorkflowService, homeReportAnalyzerService,
+            schoolAndAreaService, new CommuteAdvisoryService(stationService, ollamaAgent),
+            objectMapper, jdbcTemplate
         );
     }
 
@@ -138,6 +151,7 @@ public class PropertyAgentController {
             BuyerWorkflowService buyerWorkflowService,
             HomeReportAnalyzerService homeReportAnalyzerService,
             GlasgowSchoolAndAreaService schoolAndAreaService,
+            CommuteAdvisoryService commuteAdvisoryService,
             ObjectMapper objectMapper,
             JdbcTemplate jdbcTemplate) {
         this.repository = repository;
@@ -145,10 +159,13 @@ public class PropertyAgentController {
         this.ollamaAgent = ollamaAgent;
         this.scraperService = scraperService;
         this.embeddingService = embeddingService;
-        this.metadataCache = metadataCache;
+        this.metadataCache = metadataCache != null ? metadataCache : new PropertyMetadataCache();
         this.buyerWorkflowService = buyerWorkflowService != null ? buyerWorkflowService : new BuyerWorkflowService();
         this.homeReportAnalyzerService = homeReportAnalyzerService != null ? homeReportAnalyzerService : new HomeReportAnalyzerService();
         this.schoolAndAreaService = schoolAndAreaService != null ? schoolAndAreaService : new GlasgowSchoolAndAreaService(objectMapper);
+        this.commuteAdvisoryService = commuteAdvisoryService != null
+            ? commuteAdvisoryService
+            : new CommuteAdvisoryService(stationService, ollamaAgent);
         this.objectMapper = objectMapper;
         this.jdbcTemplate = jdbcTemplate;
         this.jdbcClient = jdbcTemplate != null ? JdbcClient.create(jdbcTemplate) : null;
@@ -225,91 +242,6 @@ public class PropertyAgentController {
         return payload;
     }
 
-    /**
-     * FEAT-05: Summary counts of shortlisted, hidden/dismissed, and Home-Report-inspected properties.
-     */
-    @GetMapping("/workflow-summary")
-    public BuyerWorkflowService.WorkflowSummary getWorkflowSummary() {
-        return buyerWorkflowService.getSummary();
-    }
-
-    /**
-     * FEAT-05: Update shortlist star, hide/dismiss toggle, viewing status, personal notes, or manual HR override.
-     */
-    @PutMapping("/{listingId}/workflow")
-    public BuyerWorkflowState updatePropertyWorkflow(
-            @PathVariable String listingId,
-            @RequestBody BuyerWorkflowService.WorkflowUpdateRequest req) {
-        return buyerWorkflowService.updateWorkflow(listingId, req);
-    }
-
-    public record HomeReportTextRequest(String rawText) {}
-
-    /**
-     * FEAT-06: Upload a Scottish Home Report PDF (or text file) to extract Market Valuation, m², £/m²,
-     * Council Tax Band, EPC Band, and Single Survey Category 2/3 repair warnings.
-     */
-    @PostMapping(value = "/{listingId}/home-report", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<?> uploadHomeReportPdf(
-            @PathVariable String listingId,
-            @RequestParam("file") MultipartFile file) {
-        try {
-            if (file == null || file.isEmpty()) {
-                return ResponseEntity.badRequest().body(Map.of("error", "Please select a Home Report PDF or text file."));
-            }
-            Integer askingHint = repository != null
-                ? repository.findById(listingId).map(IndexedPropertyEntity::getPriceGbp).orElse(null)
-                : null;
-            HomeReportAnalyzerService.HomeReportAnalysis analysis =
-                homeReportAnalyzerService.analyzePdfBytes(file.getBytes(), askingHint);
-            BuyerWorkflowState updatedWorkflow = buyerWorkflowService.saveHomeReportAnalysis(listingId, analysis);
-            return ResponseEntity.ok(Map.of(
-                "listingId", listingId,
-                "analysis", analysis,
-                "workflow", updatedWorkflow,
-                "summaryCounts", buyerWorkflowService.getSummary()
-            ));
-        } catch (IllegalArgumentException badReq) {
-            return ResponseEntity.badRequest().body(Map.of("error", badReq.getMessage()));
-        } catch (Exception e) {
-            log.warn("Home Report upload parse error for {}: {}", listingId, e.getMessage());
-            return ResponseEntity.status(HttpStatus.UNPROCESSABLE_CONTENT)
-                .body(Map.of("error", "Failed to parse Home Report: " + e.getMessage()));
-        }
-    }
-
-    /**
-     * FEAT-06: Paste Single Survey / Home Report text directly for instant valuation & Category 2/3 repair analysis.
-     */
-    @PostMapping(value = "/{listingId}/home-report-text", consumes = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<?> analyzeHomeReportText(
-            @PathVariable String listingId,
-            @RequestBody HomeReportTextRequest req) {
-        try {
-            if (req == null || req.rawText() == null || req.rawText().isBlank()) {
-                return ResponseEntity.badRequest().body(Map.of("error", "Paste Single Survey / Home Report text to analyze."));
-            }
-            Integer askingHint = repository != null
-                ? repository.findById(listingId).map(IndexedPropertyEntity::getPriceGbp).orElse(null)
-                : null;
-            HomeReportAnalyzerService.HomeReportAnalysis analysis =
-                homeReportAnalyzerService.analyzeHomeReportText(req.rawText(), askingHint);
-            BuyerWorkflowState updatedWorkflow = buyerWorkflowService.saveHomeReportAnalysis(listingId, analysis);
-            return ResponseEntity.ok(Map.of(
-                "listingId", listingId,
-                "analysis", analysis,
-                "workflow", updatedWorkflow,
-                "summaryCounts", buyerWorkflowService.getSummary()
-            ));
-        } catch (IllegalArgumentException badReq) {
-            return ResponseEntity.badRequest().body(Map.of("error", badReq.getMessage()));
-        } catch (Exception e) {
-            log.warn("Home Report text analysis error for {}: {}", listingId, e.getMessage());
-            return ResponseEntity.status(HttpStatus.UNPROCESSABLE_CONTENT)
-                .body(Map.of("error", "Failed to analyze Home Report text: " + e.getMessage()));
-        }
-    }
-
     @GetMapping("/llm-status")
     public OllamaAgentService.LlmStatusReport getLlmStatus() {
         return ollamaAgent.getLlmStatus(true);
@@ -350,6 +282,9 @@ public class PropertyAgentController {
     }
 
     public void broadcastStatusSnapshot(RightmoveScraperService.ScrapeJobStatus status) {
+        if (status != null && !status.running() && metadataCache != null) {
+            metadataCache.invalidateSuggestions();
+        }
         if (sseEmitters.isEmpty() || status == null) return;
         for (SseEmitter emitter : sseEmitters) {
             try {
@@ -367,7 +302,7 @@ public class PropertyAgentController {
     public ResponseEntity<RightmoveScraperService.ScrapeJobStatus> reanalyzeWithLlm(
             @RequestParam(defaultValue = "0") int limit,
             @RequestParam(defaultValue = "false") boolean onlyFailed) {
-        this.cachedSuggestions = null;
+        metadataCache.invalidateSuggestions();
         RightmoveScraperService.ScrapeJobStatus status = scraperService.startBackgroundReanalyzeLlm(limit, onlyFailed);
         HttpStatus code = status.accepted() ? HttpStatus.ACCEPTED : HttpStatus.CONFLICT;
         return ResponseEntity.status(code).body(status);
@@ -399,11 +334,7 @@ public class PropertyAgentController {
             ? req.transportModes()
             : List.of("Train", "Subway", "Bus");
 
-        String cacheKey = listingId + ":" + target + ":" + String.join(",", modes);
-        return commuteReportCache.get(cacheKey, k -> {
-            String dossier = stationService.buildGroundedCommuteDossier(entity, target, modes);
-            return ollamaAgent.researchCommuteWithLlm(listingId, target, dossier);
-        });
+        return commuteAdvisoryService.researchCommute(entity, target, modes);
     }
 
     @GetMapping("/logs")
@@ -450,8 +381,9 @@ public class PropertyAgentController {
 
     @GetMapping("/suggestions")
     public List<String> getDynamicSuggestions() {
-        if (cachedSuggestions != null) {
-            return cachedSuggestions;
+        List<String> cached = metadataCache.getCachedSuggestions();
+        if (cached != null) {
+            return cached;
         }
 
         Set<String> baseSuggestions = new LinkedHashSet<>(List.of(
@@ -505,7 +437,7 @@ public class PropertyAgentController {
             .forEach(e -> baseSuggestions.add(e.getKey()));
 
         List<String> result = new ArrayList<>(baseSuggestions);
-        this.cachedSuggestions = result;
+        metadataCache.setCachedSuggestions(result);
         return result;
     }
 
@@ -517,7 +449,7 @@ public class PropertyAgentController {
 
     @PostMapping("/scrape")
     public ResponseEntity<RightmoveScraperService.ScrapeJobStatus> triggerScrape(@Valid @RequestBody SearchFilterRequest request) {
-        this.cachedSuggestions = null;
+        metadataCache.invalidateSuggestions();
         String provider = request.portalProvider() != null && !request.portalProvider().isBlank()
             ? request.portalProvider().trim().toLowerCase(Locale.ROOT)
             : "rightmove";
@@ -546,6 +478,7 @@ public class PropertyAgentController {
         if (scheduler == null) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
         }
+        metadataCache.invalidateSuggestions();
         RightmoveScraperService.ScrapeJobStatus status = scheduler.triggerManualFetch();
         HttpStatus code = status.accepted() ? HttpStatus.ACCEPTED : HttpStatus.CONFLICT;
         return ResponseEntity.status(code).body(status);
@@ -583,8 +516,7 @@ public class PropertyAgentController {
             }
             repository.deleteAllInBatch();
             metadataCache.clear();
-            commuteReportCache.invalidateAll();
-            cachedSuggestions = null;
+            commuteAdvisoryService.invalidateAll();
             embeddingService.clearCriteriaBatchCache();
             scraperService.clearAllDownloadedMedia();
             scraperService.resetStateOnDatabaseClear();
@@ -750,7 +682,7 @@ public class PropertyAgentController {
             SELECT listing_id, title, address, property_type, price_gbp, previous_price_gbp,
                    price_qualifier, price_changed_at, last_seen_at, bedrooms,
                    distance_from_glasgow_central_miles, latitude, longitude,
-                   rightmove_url, thumbnail_url, floorplan_url, raw_description,
+                   rightmove_url, thumbnail_url, floorplan_url, LEFT(raw_description, 1500) AS raw_description,
                    nearest_station_name, distance_to_station_miles, fastest_train_mins,
                    estimated_door_to_central_mins, station_free_parking, station_accessibility_category,
                    nearest_bus_stop_name, distance_to_bus_stop_miles, walk_to_bus_stop_mins,

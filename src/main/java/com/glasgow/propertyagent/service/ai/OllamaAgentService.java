@@ -511,12 +511,19 @@ public class OllamaAgentService {
         }
 
         try {
+            int maxDim = this.photoMaxDimension;
+            List<java.util.concurrent.CompletableFuture<byte[]>> encodeFutures = new ArrayList<>(batch.size());
+            for (Path img : batch) {
+                encodeFutures.add(java.util.concurrent.CompletableFuture.supplyAsync(
+                    () -> VisionImagePreprocessor.prepareImageBytesForVision(img, maxDim, 0.82f)
+                ));
+            }
             List<String> b64List = new ArrayList<>();
             List<Path> validPaths = new ArrayList<>();
             List<Integer> validOriginalIndices = new ArrayList<>();
             for (int idx = 0; idx < batch.size(); idx++) {
                 Path img = batch.get(idx);
-                byte[] bytes = VisionImagePreprocessor.prepareImageBytesForVision(img, this.photoMaxDimension, 0.82f);
+                byte[] bytes = encodeFutures.get(idx).join();
                 if (bytes != null && bytes.length >= 500) {
                     b64List.add(Base64.getEncoder().encodeToString(bytes));
                     validPaths.add(img);
@@ -700,7 +707,7 @@ public class OllamaAgentService {
               "kitchenExtensionPotentialToRear": boolean,
               "hasUtilityRoom": boolean,
               "hasDedicatedStudyOrOffice": boolean,
-              "garageType": "Integral" | "Detached" | "None",
+              "garageType": "Integral" | "Detached" | "Attached" | "Converted" | "None",
               "gardenEnclosedForKids": boolean,
               "gardenOrientation": "South" | "South-West" | "West" | "East" | "North" | "Unknown",
               "drivewayCarCapacity": integer,

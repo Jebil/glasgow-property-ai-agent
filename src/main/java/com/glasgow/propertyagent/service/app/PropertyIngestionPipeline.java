@@ -139,18 +139,37 @@ public class PropertyIngestionPipeline {
 
         try {
             if (priceChanged) {
-                Integer prevToStore = (snap.getPreviousPriceGbp() != null
-                        && snap.getPreviousPriceGbp() > snap.getPriceGbp()
-                        && currentPriceGbp < snap.getPriceGbp())
-                    ? snap.getPreviousPriceGbp()
-                    : snap.getPriceGbp();
+                Integer prevToStore;
+                if (currentPriceGbp < snap.getPriceGbp()) {
+                    // Price reduction: preserve the highest historical peak price
+                    prevToStore = (snap.getPreviousPriceGbp() != null && snap.getPreviousPriceGbp() > snap.getPriceGbp())
+                        ? snap.getPreviousPriceGbp()
+                        : snap.getPriceGbp();
+                } else {
+                    // Price increase: only retain previousPriceGbp if it was still higher than the new price
+                    prevToStore = (snap.getPreviousPriceGbp() != null && snap.getPreviousPriceGbp() > currentPriceGbp)
+                        ? snap.getPreviousPriceGbp()
+                        : null;
+                }
                 repository.updateListingPriceChange(listingId, prevToStore, currentPriceGbp, normNewQual, now, now);
                 existingSnapshots.put(listingId, new InMemoryPriceSnapshot(listingId, currentPriceGbp, prevToStore, normNewQual));
+                if (metadataCache != null) {
+                    metadataCache.invalidateSuggestions();
+                }
+                if (embeddingService != null) {
+                    embeddingService.syncOverviewPriceChange(listingId, currentPriceGbp, normNewQual);
+                }
                 stateTracker.incrementPriceChangesDetected();
                 log.info("[{}] Synced asking-price change: £{} -> £{} ({})", listingId, snap.getPriceGbp(), currentPriceGbp, normNewQual);
             } else if (qualChanged) {
                 repository.updateListingPriceChange(listingId, snap.getPreviousPriceGbp(), snap.getPriceGbp(), normNewQual, now, now);
                 existingSnapshots.put(listingId, new InMemoryPriceSnapshot(listingId, snap.getPriceGbp(), snap.getPreviousPriceGbp(), normNewQual));
+                if (metadataCache != null) {
+                    metadataCache.invalidateSuggestions();
+                }
+                if (embeddingService != null) {
+                    embeddingService.syncOverviewPriceChange(listingId, snap.getPriceGbp(), normNewQual);
+                }
                 stateTracker.incrementPriceChangesDetected();
                 log.info("[{}] Synced price qualifier change: '{}' -> '{}'", listingId, normOldQual, normNewQual);
             } else {

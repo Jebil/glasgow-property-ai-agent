@@ -26,6 +26,7 @@ public class GlasgowSchoolAndAreaService {
 
     private static final Logger log = LoggerFactory.getLogger(GlasgowSchoolAndAreaService.class);
     private static final String DATASET_RESOURCE = "/data/glasgow-schools-and-areas.json";
+    private static final Pattern POSTCODE_SECTOR_PATTERN = Pattern.compile("\\b((?:G|ML|PA|KA|FK)\\d{1,2})\\s+(\\d)[A-Z]{0,2}\\b");
     private static final Pattern POSTCODE_DISTRICT_PATTERN = Pattern.compile("\\b([A-Z]{1,2}\\d{1,2})[A-Z]?\\b");
 
     public record AreaHubEntry(
@@ -80,6 +81,7 @@ public class GlasgowSchoolAndAreaService {
     public SchoolAndAreaProfile resolveProfile(String address, String title, double lat, double lon) {
         String addrUpper = address != null ? address.toUpperCase(Locale.ROOT) : "";
         String combinedLower = ((address != null ? address : "") + " " + (title != null ? title : "")).toLowerCase(Locale.ROOT);
+        String postcodeSector = extractPostcodeSector(addrUpper);
         String postcodeDistrict = extractPostcodeDistrict(addrUpper);
         boolean hasCoords = lat != 0.0 && lon != 0.0;
 
@@ -96,6 +98,10 @@ public class GlasgowSchoolAndAreaService {
                         break;
                     }
                 }
+            }
+
+            if (postcodeSector != null && matchesPostcodeSectorForHub(postcodeSector, hub.neighbourhoodName())) {
+                score += 52.0;
             }
 
             if (postcodeDistrict != null && hub.postcodePrefixes() != null) {
@@ -126,7 +132,7 @@ public class GlasgowSchoolAndAreaService {
         }
 
         if (bestHub != null) {
-            return toProfile(bestHub);
+            return refineSectorCatchment(toProfile(bestHub), postcodeSector, combinedLower);
         }
 
         // Nearest geographic fallback within 4.5 miles if coordinates are present
@@ -141,11 +147,64 @@ public class GlasgowSchoolAndAreaService {
                 }
             }
             if (closest != null) {
-                return toProfile(closest);
+                return refineSectorCatchment(toProfile(closest), postcodeSector, combinedLower);
             }
         }
 
         return defaultProfile();
+    }
+
+    private static boolean matchesPostcodeSectorForHub(String sector, String neighbourhoodName) {
+        if (sector == null || neighbourhoodName == null) return false;
+        String n = neighbourhoodName.toLowerCase(Locale.ROOT);
+        return switch (sector) {
+            case "G76 0" -> n.contains("eaglesham");
+            case "G76 7", "G76 8", "G76 9" -> n.contains("clarkston");
+            case "G66 4", "G66 5" -> n.contains("lenzie");
+            case "G66 1", "G66 2", "G66 3", "G66 7", "G66 8" -> n.contains("kirkintilloch");
+            case "G72 7", "G72 8" -> n.contains("cambuslang");
+            case "G72 0", "G72 9" -> n.contains("blantyre");
+            case "G74 5" -> n.contains("thorntonhall");
+            case "G74 1", "G74 2", "G74 3", "G74 4", "G74 6", "G74 7", "G74 8", "G74 9" -> n.contains("east kilbride");
+            default -> false;
+        };
+    }
+
+    private static SchoolAndAreaProfile refineSectorCatchment(
+            SchoolAndAreaProfile base,
+            String postcodeSector,
+            String combinedLower) {
+        if (base == null) return null;
+        String nonDenom = base.nonDenomSecondary();
+        if (postcodeSector != null) {
+            if ("G61 4".equals(postcodeSector)) {
+                nonDenom = "Boclair Academy (G61 4) / Bearsden Academy";
+            } else if (postcodeSector.startsWith("G61 ")) {
+                nonDenom = "Bearsden Academy (" + postcodeSector + ") / Boclair Academy";
+            } else if ("G46 8".equals(postcodeSector) || combinedLower.contains("thornliebank")) {
+                nonDenom = "Woodfarm High (G46 8) / Williamwood High";
+            } else if ("G46 6".equals(postcodeSector) || "G46 7".equals(postcodeSector)) {
+                nonDenom = "Williamwood High (" + postcodeSector + ") / Woodfarm High";
+            } else if ("G77 5".equals(postcodeSector)) {
+                nonDenom = "Mearns Castle High (G77 5) / Eastwood High";
+            } else if ("G77 6".equals(postcodeSector)) {
+                nonDenom = "Eastwood High (G77 6) / Mearns Castle High";
+            }
+        }
+        if (nonDenom.equals(base.nonDenomSecondary())) {
+            return base;
+        }
+        return new SchoolAndAreaProfile(
+            base.neighbourhoodName(),
+            base.councilArea(),
+            nonDenom,
+            base.denomSecondary(),
+            base.attainmentTier(),
+            base.higherPassPctApprox(),
+            base.simdDecile(),
+            base.councilTaxGuide(),
+            base.typicalOffersOverPct()
+        );
     }
 
     private static SchoolAndAreaProfile toProfile(AreaHubEntry hub) {
@@ -174,6 +233,16 @@ public class GlasgowSchoolAndAreaService {
             "Band D-F",
             8
         );
+    }
+
+    private static String extractPostcodeSector(String upperText) {
+        if (upperText == null || upperText.isBlank()) return null;
+        Matcher m = POSTCODE_SECTOR_PATTERN.matcher(upperText);
+        String found = null;
+        while (m.find()) {
+            found = m.group(1) + " " + m.group(2);
+        }
+        return found;
     }
 
     private static String extractPostcodeDistrict(String upperText) {

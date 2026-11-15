@@ -108,9 +108,19 @@ public class ChatAssistantService {
         this.chatModel = chatModel;
     }
 
+    @FunctionalInterface
+    public interface ChatStreamListener {
+        void onEvent(String eventType, Object payload);
+    }
+
     // ------------------------------------------------------------------ chat loop
 
     public ChatResponse chat(ChatRequest request) {
+        return chat(request, (eventType, payload) -> {});
+    }
+
+    public ChatResponse chat(ChatRequest request, ChatStreamListener streamListener) {
+        ChatStreamListener listener = streamListener != null ? streamListener : (t, p) -> {};
         List<Map<String, Object>> actions = new ArrayList<>();
         List<String> trace = new ArrayList<>();
 
@@ -124,14 +134,23 @@ public class ChatAssistantService {
             convo.add(Map.of("role", role, "content", m.content()));
         }
         if (convo.size() == 1) {
-            return new ChatResponse("Ask me anything about the properties, your current filters, buying in Scotland, or managing scrapes & logs.",
-                actions, trace, chatModel);
+            ChatResponse emptyResp = new ChatResponse(
+                "Ask me anything about the properties, your current filters, buying in Scotland, or managing scrapes & logs.",
+                actions, trace, chatModel
+            );
+            listener.onEvent("done", emptyResp);
+            return emptyResp;
         }
 
         boolean useTools = true;
         String notice = "";
+        StringBuilder accumulatedThinking = new StringBuilder();
         try {
             for (int round = 0; round < MAX_TOOL_ROUNDS; round++) {
+                listener.onEvent("status", Map.of(
+                    "round", round + 1,
+                    "message", round == 0 ? "AI is analyzing your request..." : "AI is synthesizing tool results (step " + (round + 1) + ")..."
+                ));
                 JsonNode resp;
                 try {
                     resp = ollama.postChatJson(buildOllamaBody(convo, useTools));
@@ -149,10 +168,15 @@ public class ChatAssistantService {
                 JsonNode msg = resp.path("message");
                 String rawThinking = msg.path("thinking").isTextual() ? msg.path("thinking").asString("")
                     : msg.path("reasoning_content").isTextual() ? msg.path("reasoning_content").asString("") : "";
+                if (!rawThinking.isBlank()) {
+                    if (accumulatedThinking.length() > 0) accumulatedThinking.append("\n");
+                    accumulatedThinking.append(rawThinking.trim());
+                    listener.onEvent("thinking", Map.of("thinking", accumulatedThinking.toString()));
+                }
                 JsonNode toolCalls = msg.path("tool_calls");
                 if (!useTools || !toolCalls.isArray() || toolCalls.size() == 0) {
                     String reply = msg.path("content").asString("").trim();
-                    String thinking = rawThinking;
+                    String thinking = accumulatedThinking.toString();
                     if (reply.contains("<think>") && reply.contains("</think>")) {
                         int start = reply.indexOf("<think>");
                         int end = reply.indexOf("</think>");
@@ -163,7 +187,9 @@ public class ChatAssistantService {
                         }
                     }
                     if (reply.isEmpty()) reply = "I couldn't produce an answer — please try rephrasing.";
-                    return new ChatResponse(notice + reply, actions, trace, thinking, chatModel);
+                    ChatResponse finalResp = new ChatResponse(notice + reply, actions, trace, thinking, chatModel);
+                    listener.onEvent("done", finalResp);
+                    return finalResp;
                 }
 
                 @SuppressWarnings("unchecked")
@@ -176,7 +202,9 @@ public class ChatAssistantService {
                     Map<String, Object> args = call.path("function").path("arguments").isObject()
                         ? objectMapper.convertValue(call.path("function").path("arguments"), Map.class)
                         : new LinkedHashMap<>();
-                    trace.add(name + " " + safeJson(args));
+                    String traceEntry = name + " " + safeJson(args);
+                    trace.add(traceEntry);
+                    listener.onEvent("tool", Map.of("name", name, "trace", traceEntry, "tool", traceEntry));
                     List<Map<String, Object>> top = request.topResults() == null ? List.of() : request.topResults();
                     String result = executeTool(name, args, actions, top);
                     Map<String, Object> toolMsg = new LinkedHashMap<>();
@@ -186,12 +214,18 @@ public class ChatAssistantService {
                     convo.add(toolMsg);
                 }
             }
-            return new ChatResponse(notice + "I used several tools but couldn't finish — please narrow the question.",
-                actions, trace, chatModel);
+            ChatResponse maxRoundResp = new ChatResponse(
+                notice + "I used several tools but couldn't finish — please narrow the question.",
+                actions, trace, accumulatedThinking.toString(), chatModel
+            );
+            listener.onEvent("done", maxRoundResp);
+            return maxRoundResp;
         } catch (Exception e) {
             log.warn("Chat assistant failed: {}", e.getMessage());
-            return new ChatResponse("The local AI model is unavailable right now (" + e.getMessage()
-                + "). Check that Ollama is running.", actions, trace, chatModel);
+            ChatResponse errResp = new ChatResponse("The local AI model is unavailable right now (" + e.getMessage()
+                + "). Check that Ollama is running.", actions, trace, accumulatedThinking.toString(), chatModel);
+            listener.onEvent("done", errResp);
+            return errResp;
         }
     }
 
@@ -738,7 +772,7 @@ public class ChatAssistantService {
             }
             if (client != null) {
                 try {
-                    List<String> ids = client.sql("SELECT listing_id FROM indexed_properties ORDER BY id ASC LIMIT 1 OFFSET ?")
+                    List<String> ids = client.sql("SELECT listing_id FROM indexed_properties ORDER BY indexed_at DESC, listing_id ASC LIMIT 1 OFFSET ?")
                         .param(index - 1).query((rs, i) -> rs.getString("listing_id")).list();
                     if (!ids.isEmpty() && !ids.get(0).isBlank()) {
                         return ids.get(0);

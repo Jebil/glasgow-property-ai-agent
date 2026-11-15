@@ -54,6 +54,8 @@ public class WebSearchClient {
         return enabled;
     }
 
+    private static final int MAX_REDIRECTS = 3;
+
     private HttpClient client() {
         HttpClient c = httpClient;
         if (c == null) {
@@ -62,7 +64,7 @@ public class WebSearchClient {
                 if (c == null) {
                     c = HttpClient.newBuilder()
                         .connectTimeout(Duration.ofSeconds(8))
-                        .followRedirects(HttpClient.Redirect.NORMAL)
+                        .followRedirects(HttpClient.Redirect.NEVER)
                         .build();
                     httpClient = c;
                 }
@@ -122,20 +124,44 @@ public class WebSearchClient {
 
     public String fetchPageText(String url) throws Exception {
         if (!enabled) throw new IllegalStateException("Web access is disabled");
-        URI uri = URI.create(url.trim());
-        assertPublicHttpUri(uri);
-        HttpRequest req = HttpRequest.newBuilder(uri)
-            .timeout(Duration.ofSeconds(15))
-            .header("User-Agent", USER_AGENT)
-            .header("Accept", "text/html,text/plain")
-            .GET()
-            .build();
-        HttpResponse<String> resp = client().send(req, HttpResponse.BodyHandlers.ofString());
-        if (resp.statusCode() >= 400) {
-            throw new IllegalStateException("Page returned HTTP " + resp.statusCode());
+        URI currentUri = URI.create(url.trim());
+        HttpResponse<String> resp = null;
+        for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
+            assertPublicHttpUri(currentUri);
+            HttpRequest req = HttpRequest.newBuilder(currentUri)
+                .timeout(Duration.ofSeconds(15))
+                .header("User-Agent", USER_AGENT)
+                .header("Accept", "text/html,text/plain")
+                .GET()
+                .build();
+            resp = client().send(req, HttpResponse.BodyHandlers.ofString());
+            int status = resp.statusCode();
+            if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
+                if (hop == MAX_REDIRECTS) {
+                    throw new IllegalStateException("Too many HTTP redirects (> " + MAX_REDIRECTS + ")");
+                }
+                String location = resp.headers().firstValue("Location")
+                    .orElseThrow(() -> new IllegalStateException("Redirect HTTP " + status + " missing Location header"));
+                currentUri = resolveAndValidateRedirect(currentUri, location);
+                continue;
+            }
+            break;
+        }
+        if (resp == null || resp.statusCode() >= 400) {
+            throw new IllegalStateException("Page returned HTTP " + (resp == null ? 0 : resp.statusCode()));
         }
         String text = cleanText(stripNonContent(resp.body() == null ? "" : resp.body()));
         return text.length() > maxPageChars ? text.substring(0, maxPageChars) + " …[truncated]" : text;
+    }
+
+    /** Resolves a redirect Location header against baseUri and enforces the SSRF public-host check on the target. */
+    public static URI resolveAndValidateRedirect(URI baseUri, String locationHeader) throws Exception {
+        if (locationHeader == null || locationHeader.isBlank()) {
+            throw new IllegalArgumentException("Empty redirect Location header");
+        }
+        URI target = baseUri.resolve(locationHeader.trim());
+        assertPublicHttpUri(target);
+        return target;
     }
 
     /** SSRF guard: only public http(s) hosts may be fetched on the model's behalf. */
